@@ -132,7 +132,7 @@ export default function ClientVault() {
 
   // Check NDA status when vault is selected
   useEffect(() => {
-    if (!selectedVault || !user || !userProfile) return;
+    if (!selectedVault || !user) return;
     
     // Reset effective role when vault changes
     setEffectiveRole(null);
@@ -141,7 +141,7 @@ export default function ClientVault() {
   }, [selectedVault, user, userProfile]);
 
   const checkNDAStatus = async () => {
-    if (!selectedVault || !user || !userProfile) return;
+    if (!selectedVault || !user) return;
     
     setNdaStatus('checking');
     
@@ -153,12 +153,19 @@ export default function ClientVault() {
         p_vault_id: selectedVault.id,
       });
 
+      if (roleError) {
+        console.error('Error getting vault role:', roleError);
+      }
+
       // If no role found (including domain-based), fall back to explicit role
-      const role = vaultRole || userProfile.role;
+      const role = vaultRole || userProfile?.role;
       setEffectiveRole(role);
       
+      console.log('NDA Check - Vault Role:', vaultRole, 'User Profile Role:', userProfile?.role, 'Effective Role:', role);
+      
       // Only check for seller and investor roles
-      if (role !== 'seller' && role !== 'investor') {
+      if (!role || (role !== 'seller' && role !== 'investor')) {
+        console.log('NDA not required - role is:', role);
         setNdaStatus('not_required');
         return;
       }
