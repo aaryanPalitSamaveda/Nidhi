@@ -102,10 +102,10 @@ export default function Auth() {
 
   const handleSignup = async (data: SignupFormData) => {
     setIsLoading(true);
-    const { error } = await signUp(data.email, data.password, data.fullName);
-    setIsLoading(false);
-
+    const { error, data: signupData } = await signUp(data.email, data.password, data.fullName);
+    
     if (error) {
+      setIsLoading(false);
       let message = error.message;
       if (error.message.includes('already registered')) {
         message = 'An account with this email already exists. Please sign in instead.';
@@ -118,11 +118,36 @@ export default function Auth() {
       return;
     }
 
-    toast({
-      title: 'Welcome to Nidhi',
-      description: 'Your account has been created successfully.',
-    });
-    navigate('/dashboard');
+    // Wait a moment for auto-confirmation to complete, then sign in automatically
+    if (signupData?.user) {
+      // Try to sign in the user automatically after a brief delay
+      setTimeout(async () => {
+        const { error: signInError } = await signIn(data.email, data.password);
+        setIsLoading(false);
+        
+        if (signInError) {
+          // If auto sign-in fails, user can manually sign in
+          toast({
+            title: 'Account created',
+            description: 'Your account has been created. Please sign in to continue.',
+          });
+          setIsLogin(true); // Switch to login form
+        } else {
+          toast({
+            title: 'Welcome to Nidhi',
+            description: 'Your account has been created and you are now signed in.',
+          });
+          navigate('/dashboard');
+        }
+      }, 2000); // Wait 2 seconds for confirmation to process
+    } else {
+      setIsLoading(false);
+      toast({
+        title: 'Account created',
+        description: 'Your account has been created. Please sign in to continue.',
+      });
+      setIsLogin(true); // Switch to login form
+    }
   };
 
   if (loading) {

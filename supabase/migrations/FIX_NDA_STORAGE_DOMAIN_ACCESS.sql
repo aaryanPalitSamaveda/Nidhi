@@ -1,10 +1,11 @@
--- Update storage policies to support domain-based access
--- This allows users with the same email domain to access documents
+-- Fix NDA template storage access for domain-based users
+-- This allows users with domain-based access (via has_vault_access) to view NDA templates
+-- Run this in Supabase SQL Editor
 
 -- Drop existing storage view policy
 DROP POLICY IF EXISTS "Users can view documents they have access to" ON storage.objects;
 
--- Create updated storage view policy with domain-based access
+-- Create updated storage view policy with domain-based access for NDA templates
 CREATE POLICY "Users can view documents they have access to"
   ON storage.objects FOR SELECT
   USING (
@@ -53,21 +54,33 @@ CREATE POLICY "Users can view documents they have access to"
           AND public.get_email_domain(au.email) IS NOT NULL
           AND public.get_email_domain(au.email) != ''
       )
-      -- NDA templates: Allow access if user has access to the vault and matches role_type
-      -- This uses has_vault_access() which includes domain-based access
+      -- NDA templates: If user can SELECT from nda_templates table (RLS handles access), allow storage access
+      -- This is simpler and relies on the RLS policies on nda_templates table
       OR EXISTS (
         SELECT 1 FROM public.nda_templates nt
-        JOIN public.vaults v ON v.id = nt.vault_id
         WHERE nt.file_path = storage.objects.name
+          -- Check if user can access this template via RLS (this includes domain-based access)
+          -- We do this by checking if the user has vault access and matching role
           AND (
-            -- Admin can access all NDA templates
+            -- Admin can access all
             public.has_role(auth.uid(), 'admin')
-            -- User has vault access (via has_vault_access which includes domain-based) AND has matching role
+            -- User has vault access (via has_vault_access which includes domain-based)
             OR (
-              public.has_vault_access(auth.uid(), v.id)
-              AND EXISTS (
-                SELECT 1 FROM public.user_roles ur
-                WHERE ur.user_id = auth.uid() AND ur.role = nt.role_type
+              public.has_vault_access(auth.uid(), nt.vault_id)
+              AND (
+                -- User has matching role
+                EXISTS (
+                  SELECT 1 FROM public.user_roles ur
+                  WHERE ur.user_id = auth.uid() AND ur.role = nt.role_type
+                )
+                -- OR user has no role but template is for investor (default role)
+                OR (
+                  NOT EXISTS (
+                    SELECT 1 FROM public.user_roles ur2
+                    WHERE ur2.user_id = auth.uid()
+                  )
+                  AND nt.role_type = 'investor'
+                )
               )
             )
           )

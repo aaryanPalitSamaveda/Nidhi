@@ -19,18 +19,24 @@ export async function signIn(email: string, password: string) {
 }
 
 export async function signUp(email: string, password: string, fullName?: string) {
-  const redirectUrl = `${window.location.origin}/`;
-  
+  // Create user without sending confirmation email
+  // The database trigger (auto_confirm_user_email_trigger) will automatically confirm the email
   const { data, error } = await supabase.auth.signUp({
     email,
     password,
     options: {
-      emailRedirectTo: redirectUrl,
+      emailRedirectTo: undefined, // Don't send confirmation email
       data: {
         full_name: fullName,
       },
     },
   });
+  
+  // Wait a moment for the database trigger to process the auto-confirmation
+  if (!error && data?.user) {
+    await new Promise(resolve => setTimeout(resolve, 1500));
+  }
+  
   return { data, error };
 }
 
