@@ -42,23 +42,40 @@ export default function NDAOverlay({ vaultId, roleType, onAgree, onDecline }: ND
 
       // Get signed URL immediately if we have file_path (with longer expiry for better caching)
       if (templateData?.file_path) {
+        setIsLoadingDocument(true);
         const { data: urlData, error: urlError } = await supabase.storage
           .from('documents')
           .createSignedUrl(templateData.file_path, 7200); // 2 hours expiry for better caching
 
         if (urlError) {
           console.error('Error creating signed URL:', urlError);
+          console.error('Error details:', {
+            message: urlError.message,
+            statusCode: urlError.statusCode,
+            error: urlError.error,
+            file_path: templateData.file_path,
+          });
           toast({
             title: 'Error',
-            description: 'Failed to load NDA document. Please contact administrator.',
+            description: `Failed to load NDA document: ${urlError.message || 'Storage access denied'}. Please contact administrator.`,
             variant: 'destructive',
           });
-        } else if (urlData) {
+          setIsLoadingDocument(false);
+        } else if (urlData?.signedUrl) {
           setViewUrl(urlData.signedUrl);
+          setIsLoadingDocument(false);
+        } else {
+          console.error('No signed URL returned from storage');
+          toast({
+            title: 'Error',
+            description: 'Failed to generate document URL. Please contact administrator.',
+            variant: 'destructive',
+          });
+          setIsLoadingDocument(false);
         }
+      } else {
+        setIsLoadingDocument(false);
       }
-      
-      setIsLoadingDocument(false);
     } catch (error: any) {
       console.error('Error fetching NDA template:', error);
       toast({
@@ -154,12 +171,13 @@ export default function NDAOverlay({ vaultId, roleType, onAgree, onDecline }: ND
                       title="NDA Document"
                     />
                   ) : ndaTemplate?.file_type?.toLowerCase().includes('word') || ndaTemplate?.file_name?.toLowerCase().includes('.doc') ? (
-                    // Word: Use Google Docs Viewer (works with signed URLs)
+                    // Word: Use Office Online Viewer (works better with signed URLs)
                     <iframe
-                      src={`https://docs.google.com/viewer?url=${encodeURIComponent(viewUrl)}&embedded=true`}
+                      src={`https://view.officeapps.live.com/op/embed.aspx?src=${encodeURIComponent(viewUrl)}`}
                       className="w-full h-full"
                       title="NDA Document"
-                      frameBorder="0"
+                      allowFullScreen
+                      sandbox="allow-scripts allow-same-origin allow-popups allow-forms"
                     />
                   ) : (
                     // Fallback: Try direct iframe

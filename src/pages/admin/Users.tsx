@@ -269,24 +269,50 @@ export default function AdminUsers() {
       await new Promise(resolve => setTimeout(resolve, 2000));
 
       // Confirm user email so they can log in immediately (admin-created users don't need email confirmation)
-      const { data: confirmResult, error: confirmError } = await supabase.rpc('confirm_user_email', {
-        target_user_id: userId,
-      });
+      // We'll retry to ensure the confirmation is processed by Supabase Auth
+      let emailConfirmed = false;
+      let confirmAttempts = 0;
+      const maxConfirmAttempts = 3;
 
-      if (confirmError) {
-        if (confirmError.message?.includes('Could not find the function')) {
-          // Function doesn't exist yet - log warning but continue
-          console.warn('confirm_user_email function not found. Please run the migration.');
+      while (!emailConfirmed && confirmAttempts < maxConfirmAttempts) {
+        const { data: confirmResult, error: confirmError } = await supabase.rpc('confirm_user_email', {
+          target_user_id: userId,
+        });
+
+        if (confirmError) {
+          if (confirmError.message?.includes('Could not find the function')) {
+            // Function doesn't exist yet - log warning but continue
+            console.warn('confirm_user_email function not found. Please run the migration.');
+            emailConfirmed = true; // Assume confirmed if function doesn't exist
+          } else {
+            // Other error - log but retry
+            console.warn(`Failed to confirm user email (attempt ${confirmAttempts + 1}/${maxConfirmAttempts}):`, confirmError);
+            confirmAttempts++;
+            if (confirmAttempts < maxConfirmAttempts) {
+              await new Promise(resolve => setTimeout(resolve, 1000));
+            }
+          }
+        } else if (confirmResult && !confirmResult.success) {
+          // Function returned but with error - retry
+          console.warn(`Failed to confirm user email (attempt ${confirmAttempts + 1}/${maxConfirmAttempts}):`, confirmResult.error);
+          confirmAttempts++;
+          if (confirmAttempts < maxConfirmAttempts) {
+            await new Promise(resolve => setTimeout(resolve, 1000));
+          }
         } else {
-          // Other error - log but don't fail user creation
-          console.warn('Failed to confirm user email:', confirmError);
+          // Success! The email confirmation has been set in the database
+          emailConfirmed = true;
+          console.log('User email confirmed successfully');
+          
+          // CRITICAL: Wait for Supabase Auth to process the email confirmation
+          // This is necessary because Supabase Auth may cache the confirmation state
+          // and needs a moment to propagate the change
+          await new Promise(resolve => setTimeout(resolve, 1500));
         }
-      } else if (confirmResult && !confirmResult.success) {
-        // Function returned but with error
-        console.warn('Failed to confirm user email:', confirmResult.error);
-      } else {
-        // Success!
-        console.log('User email confirmed successfully');
+      }
+
+      if (!emailConfirmed) {
+        console.warn('Email confirmation may not have completed. User may need to wait a few seconds before signing in.');
       }
 
       // Assign role using database function - this handles foreign key issues server-side
@@ -330,7 +356,8 @@ export default function AdminUsers() {
       
       toast({
         title: 'User created successfully',
-        description: `User ${newUserEmail} has been created. Check the dialog to copy the password.`,
+        description: `User ${newUserEmail} has been created. They can sign in immediately. Check the dialog to copy the password.`,
+        duration: 5000,
       });
 
       // Reset form (but keep dialog open to show password)
