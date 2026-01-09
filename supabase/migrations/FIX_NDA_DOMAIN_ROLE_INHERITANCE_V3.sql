@@ -1,6 +1,6 @@
 -- Fix NDA access: Domain-based users inherit role from explicitly assigned user
+-- VERSION 3: Simplified and more reliable approach
 -- If aditya@larsentoubro.com is assigned as "Investor", all @larsentoubro.com users get "Investor" NDA
--- This removes ambiguity about which NDA template to show
 
 -- Step 1: Create helper function to get user's role for a vault (with domain fallback)
 CREATE OR REPLACE FUNCTION public.get_user_role_for_vault(
@@ -39,14 +39,29 @@ BEGIN
   
   v_user_domain := public.get_email_domain(v_user_email);
   
-  -- Find role of any user with same domain who has access to this vault
-  -- Use has_vault_access to check access (includes domain-based access)
+  -- Find role of any user with same domain who has explicit vault permission
+  -- Use JOIN for better performance and reliability
   SELECT ur.role INTO v_role
   FROM public.user_roles ur
   JOIN auth.users au ON au.id = ur.user_id
+  JOIN public.vault_permissions vp ON vp.user_id = ur.user_id
   WHERE public.get_email_domain(au.email) = v_user_domain
-    AND public.has_vault_access(ur.user_id, p_vault_id)
+    AND vp.vault_id = p_vault_id
+    AND vp.can_view = true
+  ORDER BY ur.created_at DESC  -- Get the most recent role if multiple
   LIMIT 1;
+  
+  -- If still no role found, check if any user with same domain is the vault client
+  IF v_role IS NULL THEN
+    SELECT ur.role INTO v_role
+    FROM public.user_roles ur
+    JOIN auth.users au ON au.id = ur.user_id
+    JOIN public.vaults v ON v.client_id = au.id
+    WHERE public.get_email_domain(au.email) = v_user_domain
+      AND v.id = p_vault_id
+    ORDER BY ur.created_at DESC
+    LIMIT 1;
+  END IF;
   
   RETURN v_role;
 END;
@@ -101,4 +116,3 @@ CREATE POLICY "Users can view documents they have access to"
       )
     )
   );
-
