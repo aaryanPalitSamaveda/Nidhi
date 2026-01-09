@@ -219,34 +219,23 @@ export default function ClientVault() {
     if (!user) return;
 
     try {
-      // Get vaults where user has permissions
-      const { data: permissions, error: permError } = await supabase
-        .from('vault_permissions')
-        .select('vault_id, can_view, can_edit, can_upload, can_delete')
-        .eq('user_id', user.id);
-
-      if (permError) throw permError;
-
-      // Also get vaults where user is the client
-      const { data: clientVaults, error: clientError } = await supabase
-        .from('vaults')
-        .select('*')
-        .eq('client_id', user.id);
-
-      if (clientError) throw clientError;
-
-      // Merge and dedupe
-      const vaultIds = new Set([
-        ...(permissions || []).map(p => p.vault_id),
-        ...(clientVaults || []).map(v => v.id),
-      ]);
-
+      // Query vaults directly - RLS will filter based on has_vault_access() which includes domain-based access
+      // This will return vaults where:
+      // 1. User has explicit permissions
+      // 2. User is the client_id
+      // 3. User has domain-based access (same email domain as someone with access)
       const { data: vaultsData, error: vaultsError } = await supabase
         .from('vaults')
         .select('*')
-        .in('id', Array.from(vaultIds));
+        .order('created_at', { ascending: false });
 
       if (vaultsError) throw vaultsError;
+
+      // Get explicit permissions for the user (if any)
+      const { data: permissions } = await supabase
+        .from('vault_permissions')
+        .select('vault_id, can_view, can_edit, can_upload, can_delete')
+        .eq('user_id', user.id);
 
       const vaultsWithPermissions: VaultWithPermission[] = (vaultsData || []).map(vault => {
         const perm = permissions?.find(p => p.vault_id === vault.id);
@@ -254,7 +243,7 @@ export default function ClientVault() {
         
         // If user has explicit vault_permissions, use those (they override client_id defaults)
         // Otherwise, if user is the client_id, give full access except delete (admin controls that)
-        // If neither, no access
+        // Otherwise, if user has domain-based access (vault appears due to RLS), give view-only access by default
         if (perm) {
           // User has explicit permissions assigned via "Manage Access"
           return {
@@ -278,14 +267,15 @@ export default function ClientVault() {
             },
           };
         } else {
-          // No explicit permissions and not the client_id - no access
+          // User has domain-based access (vault appears due to RLS has_vault_access)
+          // Give view-only access by default - they can see but need explicit permissions for edit/upload/delete
           return {
             ...vault,
             permissions: {
-              can_view: false,
-              can_edit: false,
-              can_upload: false,
-              can_delete: false,
+              can_view: true, // Domain-based access grants view
+              can_edit: false, // Need explicit permission for edit
+              can_upload: false, // Need explicit permission for upload
+              can_delete: false, // Need explicit permission for delete
             },
           };
         }
