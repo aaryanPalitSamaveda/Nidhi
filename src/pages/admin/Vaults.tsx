@@ -417,10 +417,10 @@ export default function AdminVaults() {
     <DashboardLayout>
       <div className="animate-fade-in">
         {/* Header */}
-        <div className="flex items-center justify-between mb-8">
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-6 sm:mb-8">
           <div>
-            <h1 className="font-display text-4xl text-foreground mb-2">Datarooms</h1>
-            <p className="text-muted-foreground">
+            <h1 className="font-display text-2xl sm:text-3xl lg:text-4xl text-foreground mb-2">Datarooms</h1>
+            <p className="text-sm sm:text-base text-muted-foreground">
               Create and manage secure datarooms for your clients
             </p>
           </div>
@@ -491,14 +491,14 @@ export default function AdminVaults() {
         </div>
 
         {/* Search */}
-        <div className="flex items-center gap-4 mb-6">
+        <div className="flex items-center gap-4 mb-4 sm:mb-6">
           <div className="relative flex-1 max-w-md">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
             <Input
               placeholder="Search datarooms..."
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              className="pl-10 bg-input border-gold/20"
+              className="pl-10 bg-input border-gold/20 text-sm sm:text-base"
             />
           </div>
         </div>
@@ -527,11 +527,11 @@ export default function AdminVaults() {
             )}
           </div>
         ) : (
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 sm:gap-6">
             {filteredVaults.map((vault) => (
               <div
                 key={vault.id}
-                className="group card-refined rounded-sm p-6 hover:border-gold/40 transition-all duration-300 hover:shadow-gold/30"
+                className="group card-refined rounded-sm p-4 sm:p-6 hover:border-gold/40 transition-all duration-300 hover:shadow-gold/30"
               >
                 <div className="flex items-start justify-between mb-4">
                   <div className="w-12 h-12 rounded-lg bg-gold/10 flex items-center justify-center">

@@ -11,7 +11,11 @@ import {
   LogOut,
   Shield,
   FileText,
+  Menu,
+  X,
 } from 'lucide-react';
+import { useState } from 'react';
+import { useIsMobile } from '@/hooks/use-mobile';
 import logo from '@/assets/samaveda-logo.jpeg';
 
 const adminNavItems = [
@@ -31,6 +35,8 @@ export function Sidebar() {
   const location = useLocation();
   const navigate = useNavigate();
   const { isAdmin, profile } = useAuth();
+  const isMobile = useIsMobile();
+  const [isOpen, setIsOpen] = useState(false);
 
   const navItems = isAdmin ? adminNavItems : clientNavItems;
 
@@ -39,8 +45,33 @@ export function Sidebar() {
     navigate('/auth');
   };
 
+  // Close sidebar when route changes on mobile
+  const handleLinkClick = () => {
+    if (isMobile) {
+      setIsOpen(false);
+    }
+  };
+
   return (
-    <aside className="fixed left-0 top-0 h-full w-64 bg-sidebar border-r border-sidebar-border flex flex-col">
+    <>
+      {/* Mobile/Tablet Menu Button */}
+      {isMobile && (
+        <button
+          onClick={() => setIsOpen(!isOpen)}
+          className="fixed top-4 left-4 z-50 p-2 rounded-lg bg-sidebar border border-sidebar-border text-foreground shadow-lg"
+          aria-label="Toggle menu"
+        >
+          {isOpen ? <X className="w-6 h-6" /> : <Menu className="w-6 h-6" />}
+        </button>
+      )}
+
+      {/* Sidebar */}
+      <aside className={cn(
+        "fixed left-0 top-0 h-full bg-sidebar border-r border-sidebar-border flex flex-col z-40 transition-transform duration-300",
+        isMobile ? (isOpen ? "w-64 translate-x-0" : "-translate-x-full w-64") : "w-64 translate-x-0"
+      )}
+      style={isMobile && !isOpen ? { transform: 'translateX(-100%)' } : undefined}
+      >
       {/* Logo */}
       <div className="p-6 border-b border-sidebar-border/50">
         <Link to="/dashboard" className="flex items-center gap-3 group">
@@ -83,6 +114,7 @@ export function Sidebar() {
             <Link
               key={item.href}
               to={item.href}
+              onClick={handleLinkClick}
               className={cn(
                 "flex items-center gap-3 px-4 py-2.5 rounded-sm text-sm font-medium transition-all duration-200",
                 isActive
@@ -109,5 +141,15 @@ export function Sidebar() {
         </Button>
       </div>
     </aside>
+
+    {/* Mobile Overlay */}
+    {isMobile && isOpen && (
+      <div
+        className="fixed inset-0 bg-black/50 z-30"
+        onClick={() => setIsOpen(false)}
+        aria-hidden="true"
+      />
+    )}
+    </>
   );
 }

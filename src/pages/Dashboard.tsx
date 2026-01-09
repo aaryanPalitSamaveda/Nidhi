@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useMemo, useCallback } from 'react';
 import { Link } from 'react-router-dom';
 import { DashboardLayout } from '@/components/layout/DashboardLayout';
 import { useAuth } from '@/contexts/AuthContext';
@@ -26,52 +26,50 @@ export default function Dashboard() {
   const [recentVaults, setRecentVaults] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
 
-  useEffect(() => {
-    fetchDashboardData();
-  }, [isAdmin, user]);
-
-  const fetchDashboardData = async () => {
+  const fetchDashboardData = useCallback(async () => {
     if (!user) return;
     
     try {
-      // Fetch vaults
-      const { data: vaults } = await supabase
-        .from('vaults')
-        .select('*')
-        .order('created_at', { ascending: false })
-        .limit(5);
-
-      // Fetch documents count
-      const { count: docsCount } = await supabase
-        .from('documents')
-        .select('*', { count: 'exact', head: true });
+      // Parallelize all queries for better performance
+      const [vaultsResult, docsCountResult, usersCountResult] = await Promise.all([
+        supabase
+          .from('vaults')
+          .select('*')
+          .order('created_at', { ascending: false })
+          .limit(5),
+        supabase
+          .from('documents')
+          .select('*', { count: 'exact', head: true }),
+        isAdmin ? supabase
+          .from('profiles')
+          .select('*', { count: 'exact', head: true }) : Promise.resolve({ count: null })
+      ]);
 
       if (isAdmin) {
-        // Admin gets total users
-        const { count: usersCount } = await supabase
-          .from('profiles')
-          .select('*', { count: 'exact', head: true });
-        
         setStats({
-          totalVaults: vaults?.length || 0,
-          totalUsers: usersCount || 0,
-          totalDocuments: docsCount || 0,
+          totalVaults: vaultsResult.data?.length || 0,
+          totalUsers: usersCountResult.count || 0,
+          totalDocuments: docsCountResult.count || 0,
         });
       } else {
         setStats({
-          totalVaults: vaults?.length || 0,
+          totalVaults: vaultsResult.data?.length || 0,
           totalUsers: 0,
-          totalDocuments: docsCount || 0,
+          totalDocuments: docsCountResult.count || 0,
         });
       }
 
-      setRecentVaults(vaults || []);
+      setRecentVaults(vaultsResult.data || []);
     } catch (error) {
       console.error('Error fetching dashboard data:', error);
     } finally {
       setLoading(false);
     }
-  };
+  }, [user, isAdmin]);
+
+  useEffect(() => {
+    fetchDashboardData();
+  }, [fetchDashboardData]);
 
   const statCards = isAdmin
     ? [
@@ -88,11 +86,11 @@ export default function Dashboard() {
     <DashboardLayout>
       <div className="animate-fade-in">
         {/* Header */}
-        <div className="mb-8">
-          <h1 className="font-display text-4xl text-foreground mb-2">
+        <div className="mb-6 sm:mb-8">
+          <h1 className="font-display text-2xl sm:text-3xl lg:text-4xl text-foreground mb-2">
             Welcome back{profile?.fullName ? `, ${profile.fullName.split(' ')[0]}` : ''}
           </h1>
-          <p className="text-muted-foreground">
+          <p className="text-sm sm:text-base text-muted-foreground">
             {isAdmin 
               ? 'Manage your datarooms and client access from here.' 
               : 'Access your secure datarooms.'}
@@ -100,7 +98,7 @@ export default function Dashboard() {
         </div>
 
         {/* Stats Grid */}
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 sm:gap-6 mb-6 sm:mb-8">
             {statCards.map((stat) => {
             const Icon = stat.icon;
             return (

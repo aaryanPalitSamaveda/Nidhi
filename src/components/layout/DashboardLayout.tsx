@@ -35,8 +35,8 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
   return (
     <div className="min-h-screen bg-background">
       <Sidebar />
-      <main className="pl-64 min-h-screen">
-        <div className="p-10 max-w-[1600px]">
+      <main className="min-h-screen pt-16 lg:pt-0 lg:pl-64">
+        <div className="p-4 sm:p-6 lg:p-10 max-w-[1600px] mx-auto">
           {children}
         </div>
       </main>
