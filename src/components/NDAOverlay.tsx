@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import { supabase } from '@/integrations/supabase/client';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
@@ -24,11 +24,7 @@ export default function NDAOverlay({ vaultId, roleType, onAgree, onDecline }: ND
   const [viewUrl, setViewUrl] = useState<string | null>(null);
   const [isLoadingDocument, setIsLoadingDocument] = useState(false);
 
-  useEffect(() => {
-    fetchNDATemplate();
-  }, [vaultId, roleType]);
-
-  const fetchNDATemplate = async () => {
+  const fetchNDATemplate = useCallback(async () => {
     try {
       // Fetch template
       const { data: templateData, error: templateError } = await supabase
@@ -73,18 +69,18 @@ export default function NDAOverlay({ vaultId, roleType, onAgree, onDecline }: ND
     } finally {
       setLoading(false);
     }
-  };
+  }, [vaultId, roleType, toast]);
 
-  const handleAgree = () => {
+  useEffect(() => {
+    fetchNDATemplate();
+  }, [fetchNDATemplate]);
+
+  const handleAgree = useCallback(() => {
     if (!ndaTemplate) return;
     setIsSignatureDialogOpen(true);
-  };
+  }, [ndaTemplate]);
 
-  // Don't convert documents - show them exactly as uploaded
-  // We'll use iframe viewers that preserve all formatting, images, fonts, etc.
-
-
-  const handleSubmitSignature = () => {
+  const handleSubmitSignature = useCallback(() => {
     if (!signatureName.trim() || !signatureCompany.trim()) {
       toast({
         title: 'Validation Error',
@@ -97,7 +93,15 @@ export default function NDAOverlay({ vaultId, roleType, onAgree, onDecline }: ND
     // Submit signature directly - preview is already shown in the form
     onAgree(signatureName.trim(), signatureCompany.trim());
     setIsSignatureDialogOpen(false);
-  };
+  }, [signatureName, signatureCompany, onAgree, toast]);
+
+  const isPdf = useMemo(() => ndaTemplate?.file_type?.includes('pdf'), [ndaTemplate]);
+  const isWord = useMemo(() => 
+    ndaTemplate?.file_type?.includes('word') || 
+    ndaTemplate?.file_name?.endsWith('.docx') || 
+    ndaTemplate?.file_name?.endsWith('.doc'),
+    [ndaTemplate]
+  );
 
   if (loading) {
     return (

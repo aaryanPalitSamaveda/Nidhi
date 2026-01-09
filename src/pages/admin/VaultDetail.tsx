@@ -777,27 +777,28 @@ export default function VaultDetail() {
     <DashboardLayout>
       <div className="animate-fade-in">
         {/* Header */}
-        <div className="flex items-center justify-between mb-6">
-          <div className="flex items-center gap-4">
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-4 sm:mb-6">
+          <div className="flex items-center gap-2 sm:gap-4 min-w-0">
             <Link to="/admin/vaults">
-              <Button variant="ghost" size="icon">
+              <Button variant="ghost" size="icon" className="flex-shrink-0">
                 <ArrowLeft className="w-5 h-5" />
               </Button>
             </Link>
-            <div>
-              <h1 className="font-display text-3xl text-foreground">{vault.name}</h1>
+            <div className="min-w-0">
+              <h1 className="font-display text-xl sm:text-2xl lg:text-3xl text-foreground truncate">{vault.name}</h1>
               {vault.description && (
-                <p className="text-muted-foreground">{vault.description}</p>
+                <p className="text-sm sm:text-base text-muted-foreground truncate">{vault.description}</p>
               )}
             </div>
           </div>
           
-          <div className="flex items-center gap-3">
+          <div className="flex flex-wrap items-center gap-2 sm:gap-3">
             <Dialog open={isCreateFolderOpen} onOpenChange={setIsCreateFolderOpen}>
               <DialogTrigger asChild>
-                <Button variant="outline">
-                  <FolderPlus className="w-4 h-4 mr-2" />
-                  New Folder
+                <Button variant="outline" size="sm" className="text-xs sm:text-sm">
+                  <FolderPlus className="w-3 h-3 sm:w-4 sm:h-4 mr-1 sm:mr-2" />
+                  <span className="hidden sm:inline">New Folder</span>
+                  <span className="sm:hidden">Folder</span>
                 </Button>
               </DialogTrigger>
               <DialogContent className="bg-card border-gold/20">
@@ -819,10 +820,11 @@ export default function VaultDetail() {
             </Dialog>
             
             <label>
-              <Button variant="gold" disabled={isUploading} asChild>
+              <Button variant="gold" disabled={isUploading} asChild size="sm" className="text-xs sm:text-sm">
                 <span>
-                  <Upload className="w-4 h-4 mr-2" />
-                  {isUploading ? 'Uploading...' : 'Upload Files'}
+                  <Upload className="w-3 h-3 sm:w-4 sm:h-4 mr-1 sm:mr-2" />
+                  <span className="hidden sm:inline">{isUploading ? 'Uploading...' : 'Upload Files'}</span>
+                  <span className="sm:hidden">{isUploading ? '...' : 'Upload'}</span>
                 </span>
               </Button>
               <input
@@ -914,13 +916,13 @@ export default function VaultDetail() {
         </div>
 
         {/* Breadcrumbs */}
-        <div className="flex items-center gap-2 mb-6 text-sm">
+        <div className="flex items-center gap-1 sm:gap-2 mb-4 sm:mb-6 text-xs sm:text-sm overflow-x-auto pb-2">
           {breadcrumbs.map((crumb, index) => (
-            <div key={crumb.id ?? 'root'} className="flex items-center gap-2">
-              {index > 0 && <ChevronRight className="w-4 h-4 text-muted-foreground" />}
+            <div key={crumb.id ?? 'root'} className="flex items-center gap-1 sm:gap-2 flex-shrink-0">
+              {index > 0 && <ChevronRight className="w-3 h-3 sm:w-4 sm:h-4 text-muted-foreground" />}
               <button
                 onClick={() => setCurrentFolderId(crumb.id)}
-                className={`hover:text-gold transition-colors ${
+                className={`hover:text-gold transition-colors truncate max-w-[120px] sm:max-w-none ${
                   index === breadcrumbs.length - 1 ? 'text-foreground font-medium' : 'text-muted-foreground'
                 }`}
               >
@@ -931,12 +933,12 @@ export default function VaultDetail() {
         </div>
 
         {/* Content */}
-        <div className="surface-elevated border border-gold/10 rounded-xl p-6">
+        <div className="surface-elevated border border-gold/10 rounded-xl p-3 sm:p-6">
           {folders.length === 0 && documents.length === 0 ? (
-            <div className="text-center py-16">
-              <FolderLock className="w-16 h-16 text-muted-foreground mx-auto mb-4" />
-              <h2 className="font-display text-xl text-foreground mb-2">Empty Folder</h2>
-              <p className="text-muted-foreground mb-6">
+            <div className="text-center py-8 sm:py-16">
+              <FolderLock className="w-12 h-12 sm:w-16 sm:h-16 text-muted-foreground mx-auto mb-4" />
+              <h2 className="font-display text-lg sm:text-xl text-foreground mb-2">Empty Folder</h2>
+              <p className="text-sm sm:text-base text-muted-foreground mb-6">
                 Upload files or create folders to get started
               </p>
             </div>
@@ -946,7 +948,7 @@ export default function VaultDetail() {
               {folders.map((folder) => (
                 <div
                   key={folder.id}
-                  className="flex items-center justify-between p-4 rounded-lg hover:bg-muted/30 transition-colors group"
+                  className="flex items-center justify-between p-3 sm:p-4 rounded-lg hover:bg-muted/30 transition-colors group"
                 >
                   <button
                     onClick={() => {
@@ -996,7 +998,7 @@ export default function VaultDetail() {
               {documents.map((doc) => (
                 <div
                   key={doc.id}
-                  className="flex items-center justify-between p-4 rounded-lg hover:bg-muted/30 transition-colors group"
+                  className="flex items-center justify-between p-3 sm:p-4 rounded-lg hover:bg-muted/30 transition-colors group"
                 >
                   <button
                     onClick={() => {

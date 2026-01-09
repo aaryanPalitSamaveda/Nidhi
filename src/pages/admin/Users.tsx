@@ -545,10 +545,10 @@ export default function AdminUsers() {
     <DashboardLayout>
       <div className="animate-fade-in">
         {/* Header */}
-        <div className="flex items-center justify-between mb-8">
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-6 sm:mb-8">
           <div>
-            <h1 className="font-display text-4xl text-foreground mb-2">Users</h1>
-            <p className="text-muted-foreground">
+            <h1 className="font-display text-2xl sm:text-3xl lg:text-4xl text-foreground mb-2">Users</h1>
+            <p className="text-sm sm:text-base text-muted-foreground">
               Manage user accounts and permissions
             </p>
           </div>
@@ -663,22 +663,118 @@ export default function AdminUsers() {
         </div>
 
         {/* Search & Filter */}
-        <div className="flex items-center gap-4 mb-6">
+        <div className="flex items-center gap-4 mb-4 sm:mb-6">
           <div className="relative flex-1 max-w-md">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
             <Input
               placeholder="Search users..."
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              className="pl-10 bg-input border-gold/20"
+              className="pl-10 bg-input border-gold/20 text-sm sm:text-base"
             />
           </div>
         </div>
 
         {/* Users Table */}
         <div className="surface-elevated border border-gold/10 rounded-xl overflow-hidden">
-          <div className="overflow-x-auto">
-            <table className="w-full">
+          {/* Mobile Card View */}
+          <div className="block sm:hidden divide-y divide-gold/10">
+            {loading ? (
+              [...Array(3)].map((_, i) => (
+                <div key={i} className="p-4">
+                  <div className="h-20 bg-muted/30 rounded animate-pulse" />
+                </div>
+              ))
+            ) : filteredUsers.length === 0 ? (
+              <div className="p-12 text-center">
+                <UserIcon className="w-12 h-12 text-muted-foreground mx-auto mb-4" />
+                <p className="text-muted-foreground">No users found</p>
+              </div>
+            ) : (
+              filteredUsers.map((user) => (
+                <div key={user.id} className="p-4 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-3 flex-1 min-w-0">
+                      <div className="w-10 h-10 rounded-full bg-gold/10 flex items-center justify-center flex-shrink-0">
+                        <UserIcon className="w-5 h-5 text-gold" />
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <p className="font-medium text-foreground truncate">
+                          {user.full_name || 'Unnamed User'}
+                        </p>
+                        <p className="text-xs text-muted-foreground truncate">{user.email}</p>
+                      </div>
+                    </div>
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
+                        <Button variant="ghost" size="icon" className="h-8 w-8">
+                          <MoreVertical className="w-4 h-4" />
+                        </Button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="end">
+                        <DropdownMenuItem onClick={() => handleUpdateRole(user.id, user.role === 'admin' ? 'seller' : user.role === 'seller' ? 'investor' : 'admin')}>
+                          <Edit className="w-4 h-4 mr-2" />
+                          Change Role
+                        </DropdownMenuItem>
+                        <DropdownMenuItem
+                          onClick={() => confirmDeleteUser(user.id, user.email)}
+                          className="text-destructive"
+                        >
+                          <Trash2 className="w-4 h-4 mr-2" />
+                          Delete
+                        </DropdownMenuItem>
+                      </DropdownMenuContent>
+                    </DropdownMenu>
+                  </div>
+                  <div className="space-y-2 text-sm">
+                    <div>
+                      <span className="text-muted-foreground">Company: </span>
+                      <span className="text-foreground">{user.company_name || '-'}</span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <span className="text-muted-foreground">Role: </span>
+                      <Select
+                        value={user.role}
+                        onValueChange={(value: 'admin' | 'seller' | 'investor') => handleUpdateRole(user.id, value)}
+                      >
+                        <SelectTrigger className="w-32 bg-transparent border-gold/20 h-8 text-xs">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="admin">
+                            <span className="flex items-center gap-2">
+                              <Shield className="w-4 h-4 text-gold" />
+                              Admin
+                            </span>
+                          </SelectItem>
+                          <SelectItem value="seller">
+                            <span className="flex items-center gap-2">
+                              <Store className="w-4 h-4 text-blue-500" />
+                              Seller
+                            </span>
+                          </SelectItem>
+                          <SelectItem value="investor">
+                            <span className="flex items-center gap-2">
+                              <TrendingUp className="w-4 h-4 text-green-500" />
+                              Investor
+                            </span>
+                          </SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div>
+                      <span className="text-muted-foreground">Created: </span>
+                      <span className="text-foreground">{new Date(user.created_at).toLocaleDateString()}</span>
+                    </div>
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+
+          {/* Desktop Table View */}
+          <div className="hidden sm:block overflow-x-auto">
+            <table className="w-full min-w-[800px]">
               <thead>
                 <tr className="border-b border-gold/10">
                   <th className="text-left p-4 text-sm font-medium text-muted-foreground">User</th>

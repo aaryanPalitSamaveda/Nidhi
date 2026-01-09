@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useMemo } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { DashboardLayout } from '@/components/layout/DashboardLayout';
 import { supabase } from '@/integrations/supabase/client';
@@ -102,6 +102,7 @@ export default function ClientVault() {
   useEffect(() => {
     fetchVaults();
     fetchUserProfile();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user]);
 
   const fetchUserProfile = async () => {
@@ -215,7 +216,7 @@ export default function ClientVault() {
     }
   }, [selectedVault, ndaStatus]);
 
-  const fetchVaults = async () => {
+  const fetchVaults = useCallback(async () => {
     if (!user) return;
 
     try {
@@ -224,20 +225,23 @@ export default function ClientVault() {
       // 1. User has explicit permissions
       // 2. User is the client_id
       // 3. User has domain-based access (same email domain as someone with access)
-      const { data: vaultsData, error: vaultsError } = await supabase
-        .from('vaults')
-        .select('*')
-        .order('created_at', { ascending: false });
+      const [vaultsResult, permissionsResult] = await Promise.all([
+        supabase
+          .from('vaults')
+          .select('*')
+          .order('created_at', { ascending: false }),
+        supabase
+          .from('vault_permissions')
+          .select('vault_id, can_view, can_edit, can_upload, can_delete')
+          .eq('user_id', user.id)
+      ]);
 
-      if (vaultsError) throw vaultsError;
+      if (vaultsResult.error) throw vaultsResult.error;
 
-      // Get explicit permissions for the user (if any)
-      const { data: permissions } = await supabase
-        .from('vault_permissions')
-        .select('vault_id, can_view, can_edit, can_upload, can_delete')
-        .eq('user_id', user.id);
+      const vaultsData = vaultsResult.data || [];
+      const permissions = permissionsResult.data || [];
 
-      const vaultsWithPermissions: VaultWithPermission[] = (vaultsData || []).map(vault => {
+      const vaultsWithPermissions: VaultWithPermission[] = vaultsData.map(vault => {
         const perm = permissions?.find(p => p.vault_id === vault.id);
         const isClient = vault.client_id === user.id;
         
@@ -292,7 +296,7 @@ export default function ClientVault() {
     } finally {
       setLoading(false);
     }
-  };
+  }, [user, toast]);
 
   const fetchVaultContents = useCallback(async () => {
     if (!selectedVault || !user) return;
@@ -788,7 +792,7 @@ export default function ClientVault() {
               </p>
             </div>
           ) : (
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 sm:gap-6">
               {vaults.map((vault) => (
                 <button
                   key={vault.id}
@@ -797,14 +801,14 @@ export default function ClientVault() {
                     setCurrentFolderId(null);
                     navigate(`/vault/${vault.id}`);
                   }}
-                  className="text-left group surface-elevated border border-gold/10 rounded-xl p-6 hover:border-gold/30 transition-all duration-300 hover:shadow-gold"
+                  className="text-left group surface-elevated border border-gold/10 rounded-xl p-4 sm:p-6 hover:border-gold/30 transition-all duration-300 hover:shadow-gold"
                 >
                   <div className="w-12 h-12 rounded-lg bg-gold/10 flex items-center justify-center mb-4">
                     <FolderLock className="w-6 h-6 text-gold" />
                   </div>
 
-                  <h3 className="font-display text-xl text-foreground mb-2">{vault.name}</h3>
-                  <p className="text-sm text-muted-foreground mb-4 line-clamp-2">
+                  <h3 className="font-display text-lg sm:text-xl text-foreground mb-2">{vault.name}</h3>
+                  <p className="text-xs sm:text-sm text-muted-foreground mb-4 line-clamp-2">
                     {vault.description || 'No description'}
                   </p>
 
@@ -970,26 +974,27 @@ export default function ClientVault() {
     <DashboardLayout>
       <div className="animate-fade-in">
         {/* Header */}
-        <div className="flex items-center justify-between mb-6">
-          <div className="flex items-center gap-4">
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-4 sm:mb-6">
+          <div className="flex items-center gap-2 sm:gap-4 min-w-0">
             <Button variant="ghost" size="icon" onClick={() => {
               setSelectedVault(null);
               setCurrentFolderId(null);
-            }}>
+            }} className="flex-shrink-0">
               <ChevronRight className="w-5 h-5 rotate-180" />
             </Button>
-            <div>
-              <h1 className="font-display text-3xl text-foreground">{selectedVault.name}</h1>
+            <div className="min-w-0">
+              <h1 className="font-display text-xl sm:text-2xl lg:text-3xl text-foreground truncate">{selectedVault.name}</h1>
             </div>
           </div>
           
-          <div className="flex items-center gap-3">
+          <div className="flex flex-wrap items-center gap-2 sm:gap-3">
             {selectedVault.permissions.can_edit && (
               <Dialog open={isCreateFolderOpen} onOpenChange={setIsCreateFolderOpen}>
                 <DialogTrigger asChild>
-                  <Button variant="outline">
-                    <FolderPlus className="w-4 h-4 mr-2" />
-                    New Folder
+                  <Button variant="outline" size="sm" className="text-xs sm:text-sm">
+                    <FolderPlus className="w-3 h-3 sm:w-4 sm:h-4 mr-1 sm:mr-2" />
+                    <span className="hidden sm:inline">New Folder</span>
+                    <span className="sm:hidden">Folder</span>
                   </Button>
                 </DialogTrigger>
                 <DialogContent className="bg-card border-gold/20">
@@ -1013,10 +1018,11 @@ export default function ClientVault() {
             
             {selectedVault.permissions.can_upload && (
               <label>
-                <Button variant="gold" disabled={isUploading} asChild>
+                <Button variant="gold" disabled={isUploading} asChild size="sm" className="text-xs sm:text-sm">
                   <span>
-                    <Upload className="w-4 h-4 mr-2" />
-                    {isUploading ? 'Uploading...' : 'Upload Files'}
+                    <Upload className="w-3 h-3 sm:w-4 sm:h-4 mr-1 sm:mr-2" />
+                    <span className="hidden sm:inline">{isUploading ? 'Uploading...' : 'Upload Files'}</span>
+                    <span className="sm:hidden">{isUploading ? '...' : 'Upload'}</span>
                   </span>
                 </Button>
                 <input
@@ -1032,13 +1038,13 @@ export default function ClientVault() {
         </div>
 
         {/* Breadcrumbs */}
-        <div className="flex items-center gap-2 mb-6 text-sm">
+        <div className="flex items-center gap-1 sm:gap-2 mb-4 sm:mb-6 text-xs sm:text-sm overflow-x-auto pb-2">
           {breadcrumbs.map((crumb, index) => (
-            <div key={crumb.id ?? 'root'} className="flex items-center gap-2">
-              {index > 0 && <ChevronRight className="w-4 h-4 text-muted-foreground" />}
+            <div key={crumb.id ?? 'root'} className="flex items-center gap-1 sm:gap-2 flex-shrink-0">
+              {index > 0 && <ChevronRight className="w-3 h-3 sm:w-4 sm:h-4 text-muted-foreground" />}
               <button
                 onClick={() => setCurrentFolderId(crumb.id)}
-                className={`hover:text-gold transition-colors ${
+                className={`hover:text-gold transition-colors truncate max-w-[120px] sm:max-w-none ${
                   index === breadcrumbs.length - 1 ? 'text-foreground font-medium' : 'text-muted-foreground'
                 }`}
               >
@@ -1049,12 +1055,12 @@ export default function ClientVault() {
         </div>
 
         {/* Content */}
-        <div className="surface-elevated border border-gold/10 rounded-xl p-6">
+        <div className="surface-elevated border border-gold/10 rounded-xl p-3 sm:p-6">
           {folders.length === 0 && documents.length === 0 ? (
-            <div className="text-center py-16">
-              <FolderLock className="w-16 h-16 text-muted-foreground mx-auto mb-4" />
-              <h2 className="font-display text-xl text-foreground mb-2">Empty Folder</h2>
-              <p className="text-muted-foreground">
+            <div className="text-center py-8 sm:py-16">
+              <FolderLock className="w-12 h-12 sm:w-16 sm:h-16 text-muted-foreground mx-auto mb-4" />
+              <h2 className="font-display text-lg sm:text-xl text-foreground mb-2">Empty Folder</h2>
+              <p className="text-sm sm:text-base text-muted-foreground">
                 {selectedVault.permissions.can_upload 
                   ? 'Upload files or create folders to get started'
                   : 'No files have been uploaded yet'}
@@ -1065,7 +1071,7 @@ export default function ClientVault() {
               {folders.map((folder) => (
                 <div
                   key={folder.id}
-                  className="flex items-center justify-between p-4 rounded-lg hover:bg-muted/30 transition-colors group"
+                  className="flex items-center justify-between p-3 sm:p-4 rounded-lg hover:bg-muted/30 transition-colors group"
                 >
                   <button
                     onClick={() => {
