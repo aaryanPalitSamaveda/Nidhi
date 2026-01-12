@@ -6,3 +6,4 @@ CREATE POLICY "Admins can insert profiles"
   WITH CHECK (public.has_role(auth.uid(), 'admin'));
 
 
+
