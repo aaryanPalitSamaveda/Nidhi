@@ -45,3 +45,4 @@ WHERE v.created_by = auth.uid()
   AND d.id = 'YOUR_DOCUMENT_ID';  -- Replace with actual document ID
 
 
+

@@ -14,6 +14,7 @@ import {
 import { useToast } from '@/hooks/use-toast';
 import { useAuth } from '@/contexts/AuthContext';
 import DocumentViewerModal from '@/components/DocumentViewerModal';
+import { FileUploadProgress, FileUploadProgress as FileUploadProgressType } from '@/components/FileUploadProgress';
 import {
   FolderLock,
   Folder,
@@ -87,6 +88,7 @@ export default function VaultDetail() {
   const [isCreateFolderOpen, setIsCreateFolderOpen] = useState(false);
   const [newFolderName, setNewFolderName] = useState('');
   const [isUploading, setIsUploading] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState<FileUploadProgressType[]>([]);
   const [selectedDocumentId, setSelectedDocumentId] = useState<string | null>(null);
   const [isDocumentModalOpen, setIsDocumentModalOpen] = useState(false);
   const [isUploadingNDA, setIsUploadingNDA] = useState(false);
@@ -380,64 +382,368 @@ export default function VaultDetail() {
     }
   };
 
+  const uploadFileWithProgress = async (
+    file: File,
+    filePath: string,
+    uploadId: string,
+    vaultId: string,
+    folderId: string | null
+  ): Promise<{ success: boolean; error?: any }> => {
+    return new Promise(async (resolve) => {
+      try {
+        // Check if file needs compression (for Free Plan 50MB limit)
+        const MAX_SIZE = 50 * 1024 * 1024; // 50MB
+        let fileToUpload = file;
+        let isCompressed = false;
+        let originalFileName = file.name;
+
+        // Update progress to show compression status
+        if (file.size > MAX_SIZE) {
+          setUploadProgress(prev => 
+            prev.map(upload => 
+              upload.id === uploadId 
+                ? { ...upload, progress: 5, error: undefined }
+                : upload
+            )
+          );
+
+          try {
+            // Lazy import compression utility to avoid module load errors
+            const { compressFileIfNeeded, formatFileSize: formatFileSizeUtil } = await import('@/utils/fileCompression');
+            const compressionResult = await compressFileIfNeeded(file, MAX_SIZE);
+            fileToUpload = compressionResult.compressedFile;
+            isCompressed = compressionResult.needsCompression;
+            
+            if (isCompressed) {
+              // Update progress to show compression completed
+              setUploadProgress(prev => 
+                prev.map(upload => 
+                  upload.id === uploadId 
+                    ? { ...upload, progress: 10 }
+                    : upload
+                )
+              );
+              
+              toast({
+                title: 'File compressed',
+                description: `${file.name} compressed from ${formatFileSizeUtil(file.size)} to ${formatFileSizeUtil(compressionResult.compressedSize)} (${(compressionResult.compressionRatio * 100).toFixed(1)}% of original)`,
+              });
+            }
+          } catch (compressionError: any) {
+            // If compression failed and file is still too large, try splitting
+            if (file.size > MAX_SIZE) {
+              try {
+                const { splitFile: splitFileUtil, formatFileSize: formatFileSizeUtil } = await import('@/utils/fileSplitter');
+                const splitResult = await splitFileUtil(file, MAX_SIZE - (2 * 1024 * 1024)); // Leave 2MB buffer
+                
+                // Update progress to show splitting
+                setUploadProgress(prev => 
+                  prev.map(upload => 
+                    upload.id === uploadId 
+                      ? { ...upload, progress: 10, error: undefined }
+                      : upload
+                  )
+                );
+
+                toast({
+                  title: 'File split into chunks',
+                  description: `${file.name} has been split into ${splitResult.chunks.length} chunks for upload. They will be reassembled on download.`,
+                });
+
+                // Upload all chunks
+                const chunkUploadPromises = splitResult.chunks.map(async (chunk, chunkIndex) => {
+                  const chunkFilePath = `${filePath}.part${chunk.chunkNumber}of${chunk.totalChunks}`;
+                  const chunkFile = new File([chunk.data], chunk.fileName, { type: file.type });
+                  
+                  const { error: chunkUploadError } = await supabase.storage
+                    .from('documents')
+                    .upload(chunkFilePath, chunkFile, {
+                      cacheControl: '3600',
+                      upsert: false,
+                    });
+
+                  if (chunkUploadError) throw chunkUploadError;
+
+                  // Update progress for this chunk
+                  const chunkProgress = 10 + ((chunkIndex + 1) / splitResult.chunks.length) * 80;
+                  setUploadProgress(prev => 
+                    prev.map(upload => 
+                      upload.id === uploadId 
+                        ? { ...upload, progress: chunkProgress }
+                        : upload
+                    )
+                  );
+                });
+
+                await Promise.all(chunkUploadPromises);
+
+                // Create a metadata document record
+                const displayName = `${originalFileName} (split into ${splitResult.chunks.length} parts)`;
+                
+                const { data: newDoc, error: docError } = await supabase
+                  .from('documents')
+                  .insert({
+                    vault_id: vaultId,
+                    folder_id: folderId,
+                    name: displayName,
+                    file_path: filePath + '.metadata', // Store metadata path
+                    file_size: file.size, // Original file size
+                    file_type: file.type,
+                    uploaded_by: user!.id,
+                  })
+                  .select()
+                  .single();
+
+                if (docError) throw docError;
+
+                // Store chunk metadata in activity log
+                if (newDoc) {
+                  try {
+                    await supabase.rpc('log_activity', {
+                      p_vault_id: vaultId,
+                      p_action: 'upload',
+                      p_resource_type: 'document',
+                      p_document_id: newDoc.id,
+                      p_folder_id: folderId,
+                      p_resource_name: displayName,
+                      p_metadata: JSON.stringify({ 
+                        split: true, 
+                        totalChunks: splitResult.chunks.length,
+                        chunkSize: splitResult.chunkSize,
+                        originalSize: file.size,
+                        chunkPaths: splitResult.chunks.map(c => `${filePath}.part${c.chunkNumber}of${c.totalChunks}`)
+                      }),
+                    });
+                  } catch (logError) {
+                    console.error('Error logging upload:', logError);
+                  }
+                }
+
+                setUploadProgress(prev => 
+                  prev.map(upload => 
+                    upload.id === uploadId 
+                      ? { ...upload, progress: 100, status: 'success' as const }
+                      : upload
+                  )
+                );
+
+                resolve({ success: true });
+                return;
+              } catch (splitError: any) {
+                setUploadProgress(prev => 
+                  prev.map(upload => 
+                    upload.id === uploadId 
+                      ? { ...upload, status: 'error' as const, error: splitError?.message || 'Failed to split file. Please upgrade to Supabase Pro Plan for large file support.' }
+                      : upload
+                  )
+                );
+                resolve({ success: false, error: splitError });
+                return;
+              }
+            }
+
+            setUploadProgress(prev => 
+              prev.map(upload => 
+                upload.id === uploadId 
+                  ? { ...upload, status: 'error' as const, error: compressionError?.message || 'Compression failed. File too large. Please upgrade to Supabase Pro Plan.' }
+                  : upload
+              )
+            );
+            resolve({ success: false, error: compressionError });
+            return;
+          }
+        }
+
+        // For large files, Supabase automatically handles chunking
+        // We'll use a progress simulation that's reasonably accurate
+        let progressInterval: NodeJS.Timeout;
+        let currentProgress = isCompressed ? 10 : 0;
+        
+        // Start progress simulation
+        const startProgress = () => {
+          progressInterval = setInterval(() => {
+            // Simulate progress - slower for larger files
+            const increment = fileToUpload.size > 100 * 1024 * 1024 ? 2 : 5; // 2% for files > 100MB, 5% for smaller
+            currentProgress = Math.min(currentProgress + increment, 85); // Cap at 85% until upload completes
+            
+            setUploadProgress(prev => 
+              prev.map(upload => 
+                upload.id === uploadId 
+                  ? { ...upload, progress: currentProgress }
+                  : upload
+              )
+            );
+          }, fileToUpload.size > 100 * 1024 * 1024 ? 500 : 200); // Update every 500ms for large files, 200ms for smaller
+        };
+
+        startProgress();
+
+        // Perform the actual upload
+        supabase.storage
+          .from('documents')
+          .upload(filePath, fileToUpload, {
+            cacheControl: '3600',
+            upsert: false,
+          })
+        .then(async ({ error: uploadError }) => {
+          clearInterval(progressInterval);
+
+          if (uploadError) {
+            setUploadProgress(prev => 
+              prev.map(upload => 
+                upload.id === uploadId 
+                  ? { ...upload, status: 'error' as const, error: uploadError.message || 'Upload failed' }
+                  : upload
+              )
+            );
+            resolve({ success: false, error: uploadError });
+            return;
+          }
+
+          // Update to 90% while creating document record
+          setUploadProgress(prev => 
+            prev.map(upload => 
+              upload.id === uploadId 
+                ? { ...upload, progress: 90 }
+                : upload
+            )
+          );
+
+          try {
+            // Store metadata about compression in the document name
+            // We'll store the original filename in metadata or as a prefix
+            const displayName = isCompressed 
+              ? originalFileName + ' (compressed)'
+              : originalFileName;
+
+            // Create document record
+            const { data: newDoc, error: docError } = await supabase
+              .from('documents')
+              .insert({
+                vault_id: vaultId,
+                folder_id: folderId,
+                name: displayName, // Store original name with compression indicator
+                file_path: filePath,
+                file_size: file.size, // Store original file size
+                file_type: file.type, // Store original file type
+                uploaded_by: user!.id,
+              })
+              .select()
+              .single();
+
+            if (docError) throw docError;
+
+            // Log upload activity
+            if (newDoc) {
+              try {
+                await supabase.rpc('log_activity', {
+                  p_vault_id: vaultId,
+                  p_action: 'upload',
+                  p_resource_type: 'document',
+                  p_document_id: newDoc.id,
+                  p_folder_id: folderId,
+                  p_resource_name: displayName,
+                  p_metadata: isCompressed ? JSON.stringify({ compressed: true, originalSize: file.size }) : null,
+                });
+              } catch (logError) {
+                console.error('Error logging upload:', logError);
+              }
+            }
+
+            // Mark as complete
+            setUploadProgress(prev => 
+              prev.map(upload => 
+                upload.id === uploadId 
+                  ? { ...upload, progress: 100, status: 'success' as const }
+                  : upload
+              )
+            );
+
+            resolve({ success: true });
+          } catch (error: any) {
+            setUploadProgress(prev => 
+              prev.map(upload => 
+                upload.id === uploadId 
+                  ? { ...upload, status: 'error' as const, error: error?.message || 'Failed to create document record' }
+                  : upload
+              )
+            );
+            resolve({ success: false, error });
+          }
+        })
+        .catch((error: any) => {
+          clearInterval(progressInterval);
+          setUploadProgress(prev => 
+            prev.map(upload => 
+              upload.id === uploadId 
+                ? { ...upload, status: 'error' as const, error: error?.message || 'Upload failed' }
+                : upload
+            )
+          );
+          resolve({ success: false, error });
+        });
+      } catch (error: any) {
+        setUploadProgress(prev => 
+          prev.map(upload => 
+            upload.id === uploadId 
+              ? { ...upload, status: 'error' as const, error: error?.message || 'Upload failed' }
+              : upload
+          )
+        );
+        resolve({ success: false, error });
+      }
+    });
+  };
+
   const handleFileUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const files = event.target.files;
     if (!files || files.length === 0 || !vaultId || !user) return;
 
     setIsUploading(true);
 
+    // Initialize upload progress for all files
+    const initialUploads: FileUploadProgressType[] = Array.from(files).map((file, index) => ({
+      id: `${Date.now()}_${index}_${file.name}`,
+      file,
+      progress: 0,
+      status: 'uploading' as const,
+    }));
+    setUploadProgress(initialUploads);
+
     try {
-      for (const file of Array.from(files)) {
-        const filePath = `${user.id}/${vaultId}/${Date.now()}_${file.name}`;
+      // Upload files in parallel with progress tracking
+      const uploadPromises = Array.from(files).map(async (file, index) => {
+        const uploadId = initialUploads[index].id;
+        const filePath = `${user.id}/${vaultId}/${Date.now()}_${index}_${file.name}`;
         
-        // Upload to storage
-        const { error: uploadError } = await supabase.storage
-          .from('documents')
-          .upload(filePath, file);
-
-        if (uploadError) throw uploadError;
-
-        // Create document record
-        const { data: newDoc, error: docError } = await supabase
-          .from('documents')
-          .insert({
-            vault_id: vaultId,
-            folder_id: currentFolderId,
-            name: file.name,
-            file_path: filePath,
-            file_size: file.size,
-            file_type: file.type,
-            uploaded_by: user.id,
-          })
-          .select()
-          .single();
-
-        if (docError) throw docError;
-
-        // Log upload activity
-        if (newDoc) {
-          try {
-            await supabase.rpc('log_activity', {
-              p_vault_id: vaultId,
-              p_action: 'upload',
-              p_resource_type: 'document',
-              p_document_id: newDoc.id,
-              p_folder_id: currentFolderId,
-              p_resource_name: file.name,
-              p_metadata: null,
-            });
-          } catch (logError) {
-            console.error('Error logging upload:', logError);
-          }
-        }
-      }
-
-      toast({
-        title: 'Upload complete',
-        description: `${files.length} file(s) uploaded successfully`,
+        return await uploadFileWithProgress(
+          file,
+          filePath,
+          uploadId,
+          vaultId,
+          currentFolderId
+        );
       });
 
-      fetchVaultData();
+      const results = await Promise.all(uploadPromises);
+      const successCount = results.filter(r => r.success).length;
+      const errorCount = results.filter(r => !r.success).length;
+
+      if (successCount > 0) {
+        toast({
+          title: 'Upload complete',
+          description: `${successCount} file(s) uploaded successfully${errorCount > 0 ? `, ${errorCount} failed` : ''}`,
+        });
+        fetchVaultData();
+      }
+
+      if (errorCount > 0 && successCount === 0) {
+        toast({
+          title: 'Upload failed',
+          description: `Failed to upload ${errorCount} file(s). Please check the errors and retry.`,
+          variant: 'destructive',
+        });
+      }
     } catch (error: any) {
       console.error('Error uploading files:', error);
       toast({
@@ -448,6 +754,48 @@ export default function VaultDetail() {
     } finally {
       setIsUploading(false);
       event.target.value = '';
+      // Clear progress after 5 seconds if all successful
+      setTimeout(() => {
+        setUploadProgress(prev => {
+          const allSuccess = prev.every(u => u.status === 'success');
+          return allSuccess ? [] : prev;
+        });
+      }, 5000);
+    }
+  };
+
+  const handleRemoveUpload = (id: string) => {
+    setUploadProgress(prev => prev.filter(upload => upload.id !== id));
+  };
+
+  const handleRetryUpload = async (id: string) => {
+    const upload = uploadProgress.find(u => u.id === id);
+    if (!upload || !vaultId || !user) return;
+
+    // Reset to uploading
+    setUploadProgress(prev => 
+      prev.map(u => 
+        u.id === id 
+          ? { ...u, progress: 0, status: 'uploading' as const, error: undefined }
+          : u
+      )
+    );
+
+    const filePath = `${user.id}/${vaultId}/${Date.now()}_${upload.file.name}`;
+    const result = await uploadFileWithProgress(
+      upload.file,
+      filePath,
+      id,
+      vaultId,
+      currentFolderId
+    );
+
+    if (result.success) {
+      toast({
+        title: 'Upload complete',
+        description: `${upload.file.name} uploaded successfully`,
+      });
+      fetchVaultData();
     }
   };
 
@@ -742,7 +1090,8 @@ export default function VaultDetail() {
     if (!bytes) return 'Unknown';
     if (bytes < 1024) return `${bytes} B`;
     if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+    if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+    return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
   };
 
   if (loading) {
@@ -914,6 +1263,17 @@ export default function VaultDetail() {
             </div>
           </div>
         </div>
+
+        {/* Upload Progress */}
+        {uploadProgress.length > 0 && (
+          <div className="mb-4 sm:mb-6">
+            <FileUploadProgress
+              uploads={uploadProgress}
+              onRemove={handleRemoveUpload}
+              onRetry={handleRetryUpload}
+            />
+          </div>
+        )}
 
         {/* Breadcrumbs */}
         <div className="flex items-center gap-1 sm:gap-2 mb-4 sm:mb-6 text-xs sm:text-sm overflow-x-auto pb-2">

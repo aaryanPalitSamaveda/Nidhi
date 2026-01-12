@@ -27,3 +27,4 @@ $$;
 GRANT EXECUTE ON FUNCTION public.confirm_user_email(UUID) TO authenticated;
 
 
+

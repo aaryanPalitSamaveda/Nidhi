@@ -121,3 +121,4 @@ console.log(`\n✅ Completed! ${successCount}/${emails.length} emails confirmed.
 console.log('\nUsers can now login with their passwords.\n');
 
 
+

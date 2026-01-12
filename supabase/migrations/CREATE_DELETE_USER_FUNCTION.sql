@@ -52,3 +52,4 @@ $$;
 GRANT EXECUTE ON FUNCTION public.delete_user_completely(UUID) TO authenticated;
 
 
+

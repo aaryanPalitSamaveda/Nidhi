@@ -51,3 +51,4 @@ WHERE p.email IN ('aaryanpalit@gmail.com', 'ayush@samavedacapital.com')
 ORDER BY p.email;
 
 
+
