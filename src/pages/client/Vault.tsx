@@ -662,9 +662,9 @@ export default function ClientVault() {
                 const chunkUploadPromises = splitResult.chunks.map(async (chunk, chunkIndex) => {
                   const chunkFilePath = `${filePath}.part${chunk.chunkNumber}of${chunk.totalChunks}`;
                   const chunkFile = new File([chunk.data], chunk.fileName, { type: file.type });
-                  
+        
                   const { error: chunkUploadError } = await supabase.storage
-                    .from('documents')
+          .from('documents')
                     .upload(chunkFilePath, chunkFile, {
                       cacheControl: '3600',
                       upsert: false,
@@ -687,16 +687,16 @@ export default function ClientVault() {
 
                 // Create a metadata document record
                 const displayName = `${originalFileName} (split into ${splitResult.chunks.length} parts)`;
-                
-                const { data: newDoc, error: docError } = await supabase
-                  .from('documents')
-                  .insert({
+
+        const { data: newDoc, error: docError } = await supabase
+          .from('documents')
+          .insert({
                     vault_id: vaultId,
                     folder_id: folderId,
                     name: displayName,
                     file_path: filePath + '.metadata', // Store metadata path
                     file_size: file.size, // Original file size
-                    file_type: file.type,
+            file_type: file.type,
                     uploaded_by: user!.id,
                   })
                   .select()
@@ -835,28 +835,28 @@ export default function ClientVault() {
                 file_size: file.size, // Store original file size
                 file_type: file.type, // Store original file type
                 uploaded_by: user!.id,
-              })
-              .select()
-              .single();
+          })
+          .select()
+          .single();
 
-            if (docError) throw docError;
+        if (docError) throw docError;
 
-            // Log upload activity
-            if (newDoc) {
-              try {
-                await supabase.rpc('log_activity', {
+        // Log upload activity
+        if (newDoc) {
+          try {
+            await supabase.rpc('log_activity', {
                   p_vault_id: vaultId,
-                  p_action: 'upload',
-                  p_resource_type: 'document',
-                  p_document_id: newDoc.id,
+              p_action: 'upload',
+              p_resource_type: 'document',
+              p_document_id: newDoc.id,
                   p_folder_id: folderId,
                   p_resource_name: displayName,
                   p_metadata: isCompressed ? JSON.stringify({ compressed: true, originalSize: file.size }) : null,
-                });
-              } catch (logError) {
-                console.error('Error logging upload:', logError);
-              }
-            }
+            });
+          } catch (logError) {
+            console.error('Error logging upload:', logError);
+          }
+        }
 
             // Mark as complete
             setUploadProgress(prev => 
@@ -938,11 +938,11 @@ export default function ClientVault() {
       const errorCount = results.filter(r => !r.success).length;
 
       if (successCount > 0) {
-        toast({
-          title: 'Upload complete',
+      toast({
+        title: 'Upload complete',
           description: `${successCount} file(s) uploaded successfully${errorCount > 0 ? `, ${errorCount} failed` : ''}`,
-        });
-        fetchVaultContents();
+      });
+      fetchVaultContents();
       }
 
       if (errorCount > 0 && successCount === 0) {
@@ -1091,14 +1091,33 @@ export default function ClientVault() {
 
       if (error) throw error;
 
-      const url = URL.createObjectURL(data);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = fileName;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
+      // Add watermark to downloaded file
+      console.log('Downloading file:', fileName, 'Type:', data.type, 'Size:', data.size);
+      try {
+        const { addWatermarkToFile } = await import('@/utils/watermark');
+        const watermarkedBlob = await addWatermarkToFile(data, fileName);
+        console.log('Watermarking completed. Original size:', data.size, 'Watermarked size:', watermarkedBlob.size);
+        
+        const url = URL.createObjectURL(watermarkedBlob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = fileName;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+      } catch (watermarkError) {
+        console.error('Watermarking failed, downloading original file:', watermarkError);
+        // If watermarking fails, download original file
+        const url = URL.createObjectURL(data);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = fileName;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+      }
 
       // Log download activity
       if (docId) {

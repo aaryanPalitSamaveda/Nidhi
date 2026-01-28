@@ -909,14 +909,33 @@ export default function DocumentViewerModal({ documentId, open, onClose }: Docum
 
       if (error) throw error;
 
-      const url = URL.createObjectURL(data);
-      const a = window.document.createElement('a');
-      a.href = url;
-      a.download = document.name;
-      window.document.body.appendChild(a);
-      a.click();
-      window.document.body.removeChild(a);
-      URL.revokeObjectURL(url);
+      // Add watermark to downloaded file
+      console.log('Downloading file:', document.name, 'Type:', data.type, 'Size:', data.size);
+      try {
+        const { addWatermarkToFile } = await import('@/utils/watermark');
+        const watermarkedBlob = await addWatermarkToFile(data, document.name);
+        console.log('Watermarking completed. Original size:', data.size, 'Watermarked size:', watermarkedBlob.size);
+        
+        const url = URL.createObjectURL(watermarkedBlob);
+        const a = window.document.createElement('a');
+        a.href = url;
+        a.download = document.name;
+        window.document.body.appendChild(a);
+        a.click();
+        window.document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+      } catch (watermarkError) {
+        console.error('Watermarking failed, downloading original file:', watermarkError);
+        // If watermarking fails, download original file
+        const url = URL.createObjectURL(data);
+        const a = window.document.createElement('a');
+        a.href = url;
+        a.download = document.name;
+        window.document.body.appendChild(a);
+        a.click();
+        window.document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+      }
 
       await logActivity(document.vault_id, document.id, 'download', 'document', document.name);
 
