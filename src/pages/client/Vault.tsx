@@ -92,6 +92,7 @@ export default function ClientVault() {
   const [currentFolderId, setCurrentFolderId] = useState<string | null>(null);
   const [breadcrumbs, setBreadcrumbs] = useState<{ id: string | null; name: string }[]>([]);
   const [loading, setLoading] = useState(true);
+  const [folderIndex, setFolderIndex] = useState<Record<string, { id: string; name: string; parent_id: string | null }>>({});
   const [isCreateFolderOpen, setIsCreateFolderOpen] = useState(false);
   const [newFolderName, setNewFolderName] = useState('');
   const [isUploading, setIsUploading] = useState(false);
@@ -228,8 +229,8 @@ export default function ClientVault() {
     if (!selectedVault || ndaStatus !== 'signed' && ndaStatus !== 'not_required') return;
     
     const interval = setInterval(() => {
-      fetchVaultContents();
-    }, 10000); // Refresh every 10 seconds
+      fetchVaultContents({ enrich: false });
+    }, 30000); // Refresh every 30 seconds (lighter refresh)
     
     return () => clearInterval(interval);
   }, [selectedVault, currentFolderId, ndaStatus]);
@@ -323,153 +324,81 @@ export default function ClientVault() {
     }
   }, [user, toast]);
 
-  const fetchVaultContents = useCallback(async () => {
+  // Build a folder index once per selected vault (avoids N+1 queries for breadcrumbs)
+  useEffect(() => {
+    if (!selectedVault) return;
+    let cancelled = false;
+    (async () => {
+      const { data, error } = await supabase
+        .from('folders')
+        .select('id, name, parent_id')
+        .eq('vault_id', selectedVault.id);
+      if (cancelled) return;
+      if (error) {
+        console.warn('Failed to build folder index:', error);
+        setFolderIndex({});
+        return;
+      }
+      const idx: Record<string, { id: string; name: string; parent_id: string | null }> = {};
+      (data || []).forEach((f) => {
+        idx[f.id] = { id: f.id, name: f.name, parent_id: f.parent_id };
+      });
+      setFolderIndex(idx);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedVault?.id]);
+
+  const fetchVaultContents = useCallback(async (opts?: { enrich?: boolean }) => {
     if (!selectedVault || !user) return;
+    const enrich = opts?.enrich ?? true;
 
     try {
-      // Log vault access
-      try {
-        await supabase.rpc('log_activity', {
-          p_vault_id: selectedVault.id,
-          p_action: 'view',
-          p_resource_type: 'vault',
-          p_document_id: null,
-          p_folder_id: null,
-          p_resource_name: selectedVault.name,
-          p_metadata: null,
-        });
-      } catch (logError) {
-        console.error('Error logging vault access:', logError);
-      }
-      // Fetch folders
-      let foldersQuery = supabase
-        .from('folders')
-        .select('*')
-        .eq('vault_id', selectedVault.id)
-        .order('name');
-      
-      if (currentFolderId === null) {
-        foldersQuery = foldersQuery.is('parent_id', null);
-      } else {
-        foldersQuery = foldersQuery.eq('parent_id', currentFolderId);
-      }
-      
-      const { data: foldersData, error: foldersError } = await foldersQuery;
+      // Fetch folders + documents in parallel (fast)
+      const [foldersRes, docsRes] = await Promise.all([
+        (() => {
+          let q = supabase.from('folders').select('*').eq('vault_id', selectedVault.id).order('name');
+          q = currentFolderId === null ? q.is('parent_id', null) : q.eq('parent_id', currentFolderId);
+          return q;
+        })(),
+        (() => {
+          let q = supabase
+            .from('documents')
+            .select('id, name, file_path, file_size, file_type, created_at, updated_by, last_updated_at')
+            .eq('vault_id', selectedVault.id)
+            .order('name');
+          q = currentFolderId === null ? q.is('folder_id', null) : q.eq('folder_id', currentFolderId);
+          return q;
+        })(),
+      ]);
 
-      if (foldersError) {
-        console.error('Error fetching folders:', foldersError);
+      if (foldersRes.error) {
+        console.error('Error fetching folders:', foldersRes.error);
         toast({
           title: 'Error loading folders',
-          description: foldersError.message || 'Failed to load folders',
+          description: foldersRes.error.message || 'Failed to load folders',
           variant: 'destructive',
         });
-      }
-
-      setFolders(foldersData || []);
-
-      // Fetch documents
-      let docsQuery = supabase
-        .from('documents')
-        .select('id, name, file_path, file_size, file_type, created_at, updated_by, last_updated_at')
-        .eq('vault_id', selectedVault.id)
-        .order('name');
-      
-      if (currentFolderId === null) {
-        docsQuery = docsQuery.is('folder_id', null);
+        setFolders([]);
       } else {
-        docsQuery = docsQuery.eq('folder_id', currentFolderId);
+        setFolders(foldersRes.data || []);
       }
-      
-      const { data: docsData, error: docsError } = await docsQuery;
 
-      if (docsError) {
-        console.error('Error fetching documents:', docsError);
-        console.error('Error details:', JSON.stringify(docsError, null, 2));
+      if (docsRes.error) {
+        console.error('Error fetching documents:', docsRes.error);
+        console.error('Error details:', JSON.stringify(docsRes.error, null, 2));
         toast({
           title: 'Error loading documents',
-          description: docsError.message || docsError.details || 'Failed to load documents. You may not have permission.',
+          description: docsRes.error.message || (docsRes.error as any).details || 'Failed to load documents. You may not have permission.',
           variant: 'destructive',
         });
         setDocuments([]);
-      } else if (docsData) {
-        // Fetch updated_by profiles
-        const updatedByIds = [...new Set(docsData.map(d => d.updated_by).filter(Boolean))] as string[];
-        const docIds = docsData.map(d => d.id);
-        let profilesMap = new Map();
-        
-        if (updatedByIds.length > 0) {
-          const { data: profiles } = await supabase
-            .from('profiles')
-            .select('id, email, full_name')
-            .in('id', updatedByIds);
-
-          profilesMap = new Map(profiles?.map(p => [p.id, p]) || []);
-        }
-        
-        // Fetch recent activities in parallel with profile fetch for better performance
-        const [activitiesResult] = await Promise.allSettled([
-          supabase
-            .from('activity_logs')
-            .select('document_id, action, created_at, user_id')
-            .in('document_id', docIds)
-            .in('action', ['view', 'edit'])
-            .order('created_at', { ascending: false })
-            .limit(100) // Limit to recent activities for performance
-        ]);
-
-        const activities = activitiesResult.status === 'fulfilled' ? activitiesResult.value.data : null;
-
-        // Get user profiles for activities (merge with existing updatedByIds)
-        const activityUserIds = [...new Set([
-          ...(activities?.map(a => a.user_id).filter(Boolean) || []),
-          ...updatedByIds
-        ])] as string[];
-        let activityProfilesMap = new Map();
-        if (activityUserIds.length > 0) {
-          const { data: activityProfiles } = await supabase
-            .from('profiles')
-            .select('id, email, full_name')
-            .in('id', activityUserIds);
-          activityProfilesMap = new Map(activityProfiles?.map(p => [p.id, p]) || []);
-          // Also update profilesMap
-          activityProfilesMap.forEach((v, k) => profilesMap.set(k, v));
-        }
-
-        // Group activities by document and get most recent view and edit
-        const activitiesByDoc = new Map<string, { lastView?: any; lastEdit?: any }>();
-        activities?.forEach(activity => {
-          if (!activitiesByDoc.has(activity.document_id)) {
-            activitiesByDoc.set(activity.document_id, {});
-          }
-          const docActivities = activitiesByDoc.get(activity.document_id)!;
-          const profile = activityProfilesMap.get(activity.user_id);
-          const activityData = {
-            user_name: profile?.full_name || profile?.email || 'Unknown',
-            action: activity.action,
-            created_at: activity.created_at,
-          };
-          
-          if (activity.action === 'view' && !docActivities.lastView) {
-            docActivities.lastView = activityData;
-          } else if (activity.action === 'edit' && !docActivities.lastEdit) {
-            docActivities.lastEdit = activityData;
-          }
-        });
-        
-        // Validate and set documents with profiles and activities
-        const validDocs = docsData.map((doc: any) => {
-          const docActivities = activitiesByDoc.get(doc.id);
-          const recentActivities: DocumentActivity[] = [];
-          
-          // Always show view first, then edit
-          if (docActivities?.lastView && docActivities.lastView.created_at !== docActivities?.lastEdit?.created_at) {
-            recentActivities.push(docActivities.lastView);
-          }
-          if (docActivities?.lastEdit) {
-            recentActivities.push(docActivities.lastEdit);
-          }
-          
-          return {
+      } else {
+        // Set basic docs immediately (fast)
+        const docsData = docsRes.data || [];
+        setDocuments(
+          docsData.map((doc: any) => ({
             id: doc.id,
             name: doc.name,
             file_path: doc.file_path,
@@ -478,11 +407,109 @@ export default function ClientVault() {
             created_at: doc.created_at,
             updated_by: doc.updated_by || null,
             last_updated_at: doc.last_updated_at || null,
-            updated_by_profile: doc.updated_by ? profilesMap.get(doc.updated_by) : undefined,
-            recent_activities: recentActivities.slice(0, 2), // Show max 2 activities
-          };
-        });
-        setDocuments(validDocs);
+          })),
+        );
+
+        // Non-blocking: log access
+        supabase
+          .rpc('log_activity', {
+            p_vault_id: selectedVault.id,
+            p_action: 'view',
+            p_resource_type: 'vault',
+            p_document_id: null,
+            p_folder_id: null,
+            p_resource_name: selectedVault.name,
+            p_metadata: null,
+          })
+          .catch((e) => console.warn('Error logging vault access:', e));
+
+        // Optional enrichment (profiles + recent activity) in background
+        if (enrich && docsData.length > 0) {
+          const MAX_ENRICH_DOCS = 60;
+          const docsForEnrichment = docsData.slice(0, MAX_ENRICH_DOCS);
+          const updatedByIds = [...new Set(docsForEnrichment.map((d: any) => d.updated_by).filter(Boolean))] as string[];
+          const docIds = docsForEnrichment.map((d: any) => d.id);
+
+          setTimeout(async () => {
+            try {
+              let profilesMap = new Map();
+              if (updatedByIds.length > 0) {
+                const { data: profiles } = await supabase
+                  .from('profiles')
+                  .select('id, email, full_name')
+                  .in('id', updatedByIds);
+                profilesMap = new Map(profiles?.map((p) => [p.id, p]) || []);
+              }
+
+              const { data: activities } = await supabase
+                .from('activity_logs')
+                .select('document_id, action, created_at, user_id')
+                .in('document_id', docIds)
+                .in('action', ['view', 'edit'])
+                .order('created_at', { ascending: false })
+                .limit(300);
+
+              const activityUserIds = [...new Set([...(activities?.map((a) => a.user_id).filter(Boolean) || []), ...updatedByIds])] as string[];
+              let activityProfilesMap = new Map();
+              if (activityUserIds.length > 0) {
+                const { data: activityProfiles } = await supabase
+                  .from('profiles')
+                  .select('id, email, full_name')
+                  .in('id', activityUserIds);
+                activityProfilesMap = new Map(activityProfiles?.map((p) => [p.id, p]) || []);
+                activityProfilesMap.forEach((v, k) => profilesMap.set(k, v));
+              }
+
+              const activitiesByDoc = new Map<string, { lastView?: any; lastEdit?: any }>();
+              activities?.forEach((activity) => {
+                if (!activitiesByDoc.has(activity.document_id)) {
+                  activitiesByDoc.set(activity.document_id, {});
+                }
+                const docActivities = activitiesByDoc.get(activity.document_id)!;
+                const profile = activityProfilesMap.get(activity.user_id);
+                const activityData = {
+                  user_name: profile?.full_name || profile?.email || 'Unknown',
+                  action: activity.action,
+                  created_at: activity.created_at,
+                };
+
+                if (activity.action === 'view' && !docActivities.lastView) {
+                  docActivities.lastView = activityData;
+                } else if (activity.action === 'edit' && !docActivities.lastEdit) {
+                  docActivities.lastEdit = activityData;
+                }
+              });
+
+              const enriched = docsData.map((doc: any) => {
+                const docActivities = activitiesByDoc.get(doc.id);
+                const recentActivities: DocumentActivity[] = [];
+                if (docActivities?.lastView && docActivities.lastView.created_at !== docActivities?.lastEdit?.created_at) {
+                  recentActivities.push(docActivities.lastView);
+                }
+                if (docActivities?.lastEdit) {
+                  recentActivities.push(docActivities.lastEdit);
+                }
+
+                return {
+                  id: doc.id,
+                  name: doc.name,
+                  file_path: doc.file_path,
+                  file_size: doc.file_size ? Number(doc.file_size) : null,
+                  file_type: doc.file_type || null,
+                  created_at: doc.created_at,
+                  updated_by: doc.updated_by || null,
+                  last_updated_at: doc.last_updated_at || null,
+                  updated_by_profile: doc.updated_by ? profilesMap.get(doc.updated_by) : undefined,
+                  recent_activities: recentActivities.slice(0, 2),
+                };
+              });
+
+              setDocuments(enriched);
+            } catch (e) {
+              console.warn('Document enrichment failed (non-blocking):', e);
+            }
+          }, 0);
+        }
       }
     } catch (error: any) {
       console.error('Error fetching vault contents:', error);
@@ -510,22 +537,14 @@ export default function ClientVault() {
       if (currentFolderId) {
         let folderId: string | null = currentFolderId;
         const folderPath: { id: string; name: string }[] = [];
-        
-        while (folderId) {
-          const { data: folder } = await supabase
-            .from('folders')
-            .select('id, name, parent_id')
-            .eq('id', folderId)
-            .single();
-          
-          if (folder) {
-            folderPath.unshift({ id: folder.id, name: folder.name });
-            folderId = folder.parent_id;
-          } else {
-            break;
-          }
+        const seen = new Set<string>();
+        while (folderId && !seen.has(folderId)) {
+          seen.add(folderId);
+          const folder = folderIndex[folderId];
+          if (!folder) break;
+          folderPath.unshift({ id: folder.id, name: folder.name });
+          folderId = folder.parent_id;
         }
-        
         crumbs.push(...folderPath);
       }
       
@@ -533,7 +552,7 @@ export default function ClientVault() {
     };
     
     buildBreadcrumbs();
-  }, [selectedVault, currentFolderId]);
+  }, [selectedVault, currentFolderId, folderIndex]);
 
   const handleCreateFolder = async () => {
     if (!newFolderName.trim() || !selectedVault || !user) return;

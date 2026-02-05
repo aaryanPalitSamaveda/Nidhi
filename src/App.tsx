@@ -15,6 +15,7 @@ import VaultPermissions from "./pages/admin/VaultPermissions";
 import ClientVault from "./pages/client/Vault";
 import DocumentViewer from "./pages/DocumentViewer";
 import Settings from "./pages/Settings";
+import TechnicalDesignDocument from "./pages/TechnicalDesignDocument";
 import NotFound from "./pages/NotFound";
 
 const queryClient = new QueryClient();
@@ -38,6 +39,7 @@ const App = () => (
             <Route path="/vault/:vaultId" element={<ClientVault />} />
             <Route path="/document/:documentId" element={<DocumentViewer />} />
             <Route path="/settings" element={<Settings />} />
+            <Route path="/technical-design-document" element={<TechnicalDesignDocument />} />
             <Route path="*" element={<NotFound />} />
           </Routes>
         </BrowserRouter>
