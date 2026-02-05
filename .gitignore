@@ -1,0 +1,28 @@
+# Python Virtual Environment
+venv/
+.venv/
+pyvenv.cfg
+env/
+ENV/
+
+# Node
+node_modules/
+npm-debug.log
+package-lock.json
+
+# Environment
+.env
+.env.local
+
+# OS
+.DS_Store
+.DS_Store?
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# Build
+dist/
+build/
