@@ -9,6 +9,14 @@ export default defineConfig(({ mode }) => ({
     host: "::",
     port: 8080,
   },
+  build: {
+    // Prevent shipping source maps in production (hides original TS/React source in prod)
+    sourcemap: false,
+  },
+  css: {
+    // Also disable CSS source maps in dev to reduce source exposure / noise
+    devSourcemap: false,
+  },
   plugins: [react(), mode === "development" && componentTagger()].filter(Boolean),
   resolve: {
     alias: {
