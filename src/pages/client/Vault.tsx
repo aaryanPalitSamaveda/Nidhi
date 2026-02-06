@@ -364,10 +364,10 @@ export default function ClientVault() {
         })(),
         (() => {
           let q = supabase
-            .from('documents')
-            .select('id, name, file_path, file_size, file_type, created_at, updated_by, last_updated_at')
-            .eq('vault_id', selectedVault.id)
-            .order('name');
+        .from('documents')
+        .select('id, name, file_path, file_size, file_type, created_at, updated_by, last_updated_at')
+        .eq('vault_id', selectedVault.id)
+        .order('name');
           q = currentFolderId === null ? q.is('folder_id', null) : q.eq('folder_id', currentFolderId);
           return q;
         })(),
@@ -432,77 +432,77 @@ export default function ClientVault() {
 
           setTimeout(async () => {
             try {
-              let profilesMap = new Map();
-              if (updatedByIds.length > 0) {
-                const { data: profiles } = await supabase
-                  .from('profiles')
-                  .select('id, email, full_name')
-                  .in('id', updatedByIds);
+        let profilesMap = new Map();
+        if (updatedByIds.length > 0) {
+          const { data: profiles } = await supabase
+            .from('profiles')
+            .select('id, email, full_name')
+            .in('id', updatedByIds);
                 profilesMap = new Map(profiles?.map((p) => [p.id, p]) || []);
-              }
-
+        }
+        
               const { data: activities } = await supabase
-                .from('activity_logs')
-                .select('document_id, action, created_at, user_id')
-                .in('document_id', docIds)
-                .in('action', ['view', 'edit'])
-                .order('created_at', { ascending: false })
+            .from('activity_logs')
+            .select('document_id, action, created_at, user_id')
+            .in('document_id', docIds)
+            .in('action', ['view', 'edit'])
+            .order('created_at', { ascending: false })
                 .limit(300);
 
               const activityUserIds = [...new Set([...(activities?.map((a) => a.user_id).filter(Boolean) || []), ...updatedByIds])] as string[];
-              let activityProfilesMap = new Map();
-              if (activityUserIds.length > 0) {
-                const { data: activityProfiles } = await supabase
-                  .from('profiles')
-                  .select('id, email, full_name')
-                  .in('id', activityUserIds);
+        let activityProfilesMap = new Map();
+        if (activityUserIds.length > 0) {
+          const { data: activityProfiles } = await supabase
+            .from('profiles')
+            .select('id, email, full_name')
+            .in('id', activityUserIds);
                 activityProfilesMap = new Map(activityProfiles?.map((p) => [p.id, p]) || []);
-                activityProfilesMap.forEach((v, k) => profilesMap.set(k, v));
-              }
+          activityProfilesMap.forEach((v, k) => profilesMap.set(k, v));
+        }
 
-              const activitiesByDoc = new Map<string, { lastView?: any; lastEdit?: any }>();
+        const activitiesByDoc = new Map<string, { lastView?: any; lastEdit?: any }>();
               activities?.forEach((activity) => {
-                if (!activitiesByDoc.has(activity.document_id)) {
-                  activitiesByDoc.set(activity.document_id, {});
-                }
-                const docActivities = activitiesByDoc.get(activity.document_id)!;
-                const profile = activityProfilesMap.get(activity.user_id);
-                const activityData = {
-                  user_name: profile?.full_name || profile?.email || 'Unknown',
-                  action: activity.action,
-                  created_at: activity.created_at,
-                };
-
-                if (activity.action === 'view' && !docActivities.lastView) {
-                  docActivities.lastView = activityData;
-                } else if (activity.action === 'edit' && !docActivities.lastEdit) {
-                  docActivities.lastEdit = activityData;
-                }
-              });
-
+          if (!activitiesByDoc.has(activity.document_id)) {
+            activitiesByDoc.set(activity.document_id, {});
+          }
+          const docActivities = activitiesByDoc.get(activity.document_id)!;
+          const profile = activityProfilesMap.get(activity.user_id);
+          const activityData = {
+            user_name: profile?.full_name || profile?.email || 'Unknown',
+            action: activity.action,
+            created_at: activity.created_at,
+          };
+          
+          if (activity.action === 'view' && !docActivities.lastView) {
+            docActivities.lastView = activityData;
+          } else if (activity.action === 'edit' && !docActivities.lastEdit) {
+            docActivities.lastEdit = activityData;
+          }
+        });
+        
               const enriched = docsData.map((doc: any) => {
-                const docActivities = activitiesByDoc.get(doc.id);
-                const recentActivities: DocumentActivity[] = [];
-                if (docActivities?.lastView && docActivities.lastView.created_at !== docActivities?.lastEdit?.created_at) {
-                  recentActivities.push(docActivities.lastView);
-                }
-                if (docActivities?.lastEdit) {
-                  recentActivities.push(docActivities.lastEdit);
-                }
-
-                return {
-                  id: doc.id,
-                  name: doc.name,
-                  file_path: doc.file_path,
-                  file_size: doc.file_size ? Number(doc.file_size) : null,
-                  file_type: doc.file_type || null,
-                  created_at: doc.created_at,
-                  updated_by: doc.updated_by || null,
-                  last_updated_at: doc.last_updated_at || null,
-                  updated_by_profile: doc.updated_by ? profilesMap.get(doc.updated_by) : undefined,
+          const docActivities = activitiesByDoc.get(doc.id);
+          const recentActivities: DocumentActivity[] = [];
+          if (docActivities?.lastView && docActivities.lastView.created_at !== docActivities?.lastEdit?.created_at) {
+            recentActivities.push(docActivities.lastView);
+          }
+          if (docActivities?.lastEdit) {
+            recentActivities.push(docActivities.lastEdit);
+          }
+          
+          return {
+            id: doc.id,
+            name: doc.name,
+            file_path: doc.file_path,
+            file_size: doc.file_size ? Number(doc.file_size) : null,
+            file_type: doc.file_type || null,
+            created_at: doc.created_at,
+            updated_by: doc.updated_by || null,
+            last_updated_at: doc.last_updated_at || null,
+            updated_by_profile: doc.updated_by ? profilesMap.get(doc.updated_by) : undefined,
                   recent_activities: recentActivities.slice(0, 2),
-                };
-              });
+          };
+        });
 
               setDocuments(enriched);
             } catch (e) {
@@ -542,9 +542,9 @@ export default function ClientVault() {
           seen.add(folderId);
           const folder = folderIndex[folderId];
           if (!folder) break;
-          folderPath.unshift({ id: folder.id, name: folder.name });
-          folderId = folder.parent_id;
-        }
+            folderPath.unshift({ id: folder.id, name: folder.name });
+            folderId = folder.parent_id;
+          }
         crumbs.push(...folderPath);
       }
       
@@ -1128,14 +1128,14 @@ export default function ClientVault() {
       } catch (watermarkError) {
         console.error('Watermarking failed, downloading original file:', watermarkError);
         // If watermarking fails, download original file
-        const url = URL.createObjectURL(data);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = fileName;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-        URL.revokeObjectURL(url);
+      const url = URL.createObjectURL(data);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = fileName;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
       }
 
       // Log download activity

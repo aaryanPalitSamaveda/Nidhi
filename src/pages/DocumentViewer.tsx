@@ -482,14 +482,14 @@ export default function DocumentViewer() {
       } catch (watermarkError) {
         console.error('Watermarking failed, downloading original file:', watermarkError);
         // If watermarking fails, download original file
-        const url = URL.createObjectURL(data);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = document.name;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-        URL.revokeObjectURL(url);
+      const url = URL.createObjectURL(data);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = document.name;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
       }
 
       // Log download activity
