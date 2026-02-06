@@ -1,3 +1,4 @@
+import { CIMGenerationPanel } from '../../components/CIMGenerationPanel';
 import { FraudAnalysisPanel } from '../../components/FraudAnalysisPanel';
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
@@ -23,9 +24,9 @@ import {
 } from '@/components/ui/select';
 import { useToast } from '@/hooks/use-toast';
 import { useAuth } from '@/contexts/AuthContext';
-import { 
-  Plus, 
-  Search, 
+import {
+  Plus,
+  Search,
   FolderLock,
   ArrowUpRight,
   Trash2,
@@ -121,7 +122,7 @@ export default function AdminVaults() {
           if (permissionsData && permissionsData.length > 0) {
             // Get unique user IDs
             const userIds = [...new Set(permissionsData.map((p: any) => p.user_id))];
-            
+
             // Fetch user profiles
             const { data: userProfiles } = await supabase
               .from('profiles')
@@ -154,7 +155,7 @@ export default function AdminVaults() {
                 .from('nda_templates')
                 .select('id, role_type')
                 .eq('vault_id', vault.id);
-              
+
               const hasSellerNDA = ndaTemplates?.some(t => t.role_type === 'seller') || false;
               const hasInvestorNDA = ndaTemplates?.some(t => t.role_type === 'investor') || false;
 
@@ -165,7 +166,7 @@ export default function AdminVaults() {
                   return role === 'seller' || role === 'investor';
                 })
                 .map(p => p.id);
-              
+
               let ndaSignaturesMap = new Map<string, string>();
               if (sellerAndInvestorIds.length > 0 && (hasSellerNDA || hasInvestorNDA)) {
                 const { data: signatures } = await supabase
@@ -173,7 +174,7 @@ export default function AdminVaults() {
                   .select('user_id, status')
                   .eq('vault_id', vault.id)
                   .in('user_id', sellerAndInvestorIds);
-                
+
                 if (signatures) {
                   signatures.forEach(sig => {
                     ndaSignaturesMap.set(sig.user_id, sig.status);
@@ -184,7 +185,7 @@ export default function AdminVaults() {
               userProfiles.forEach((profile) => {
                 const userRole = roleMap.get(profile.id) || 'investor';
                 let ndaStatus: 'signed' | 'unsigned' | 'not_required' = 'not_required';
-                
+
                 if (userRole === 'seller' && hasSellerNDA) {
                   const signatureStatus = ndaSignaturesMap.get(profile.id);
                   if (signatureStatus === 'signed') {
@@ -220,7 +221,7 @@ export default function AdminVaults() {
               .select('id, email, full_name')
               .eq('id', vault.created_by)
               .single();
-            
+
             // Get creator role
             const { data: creatorRole } = await supabase
               .from('user_roles')
@@ -241,8 +242,8 @@ export default function AdminVaults() {
             }
           }
 
-          return { 
-            ...vault, 
+          return {
+            ...vault,
             client,
             users: Array.from(usersMap.values())
           };
@@ -425,7 +426,7 @@ export default function AdminVaults() {
               Create and manage secure datarooms for your clients
             </p>
           </div>
-          
+
           <Dialog open={isCreateDialogOpen} onOpenChange={setIsCreateDialogOpen}>
             <DialogTrigger asChild>
               <Button variant="gold">
@@ -437,7 +438,7 @@ export default function AdminVaults() {
               <DialogHeader>
                 <DialogTitle className="font-display text-2xl">Create New Dataroom</DialogTitle>
               </DialogHeader>
-              
+
               <div className="space-y-4 mt-4">
                 <div className="space-y-2">
                   <Label>Dataroom Name</Label>
@@ -448,7 +449,7 @@ export default function AdminVaults() {
                     className="bg-input border-gold/20"
                   />
                 </div>
-                
+
                 <div className="space-y-2">
                   <Label>Description (Optional)</Label>
                   <Textarea
@@ -458,7 +459,7 @@ export default function AdminVaults() {
                     className="bg-input border-gold/20"
                   />
                 </div>
-                
+
                 <div className="space-y-2">
                   <Label>Assign to Client (Optional)</Label>
                   <Select
@@ -516,8 +517,8 @@ export default function AdminVaults() {
             <FolderLock className="w-16 h-16 text-muted-foreground mx-auto mb-4" />
             <h2 className="font-display text-2xl text-foreground mb-2">No Datarooms Found</h2>
             <p className="text-muted-foreground mb-6">
-              {searchQuery 
-                ? 'No datarooms match your search criteria' 
+              {searchQuery
+                ? 'No datarooms match your search criteria'
                 : 'Create your first dataroom to get started'}
             </p>
             {!searchQuery && (
@@ -584,7 +585,7 @@ export default function AdminVaults() {
                     </div>
                     <div className="flex flex-wrap gap-2 ml-6">
                       {vault.users.map((user) => (
-                        <span 
+                        <span
                           key={user.id}
                           className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-gold/10 text-gold border border-gold/20"
                         >
@@ -598,8 +599,8 @@ export default function AdminVaults() {
                           {user.full_name || user.email}
                           {(user.role === 'seller' || user.role === 'investor') && user.ndaStatus && (
                             <span className={`ml-1.5 px-1.5 py-0.5 rounded text-[10px] font-semibold ${
-                              user.ndaStatus === 'signed' 
-                                ? 'bg-green-500/20 text-green-600 border border-green-500/30' 
+                              user.ndaStatus === 'signed'
+                                ? 'bg-green-500/20 text-green-600 border border-green-500/30'
                                 : 'bg-red-500/20 text-red-600 border border-red-500/30'
                             }`}>
                               {user.ndaStatus === 'signed' ? 'NDA Signed' : 'NDA Unsigned'}
@@ -673,6 +674,9 @@ export default function AdminVaults() {
       </Dialog>
 <div className="mt-12">
         <FraudAnalysisPanel />
+      </div>
+    <div className="mt-12">
+        <CIMGenerationPanel />
       </div>
     </DashboardLayout>
   );
