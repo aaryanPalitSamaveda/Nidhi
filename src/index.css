@@ -204,6 +204,61 @@
   .table-refined td {
     @apply py-3 px-4 text-sm border-b border-border/10;
   }
+
+  /* Chatbot styles */
+  .chat-scrollbar::-webkit-scrollbar {
+    width: 6px;
+  }
+
+  .chat-scrollbar::-webkit-scrollbar-track {
+    background: hsl(var(--surface-elevated));
+    border-radius: 10px;
+  }
+
+  .chat-scrollbar::-webkit-scrollbar-thumb {
+    background: linear-gradient(180deg, hsl(var(--gold)) 0%, hsl(var(--gold-dark)) 100%);
+    border-radius: 10px;
+  }
+
+  .chat-scrollbar::-webkit-scrollbar-thumb:hover {
+    background: linear-gradient(180deg, hsl(var(--gold-light)) 0%, hsl(var(--gold)) 100%);
+  }
+
+  .typing-dot {
+    animation: typingBounce 1.4s infinite ease-in-out both;
+  }
+
+  .typing-dot:nth-child(1) { animation-delay: -0.32s; }
+  .typing-dot:nth-child(2) { animation-delay: -0.16s; }
+
+  .message-bubble {
+    animation: messagePop 0.3s ease-out;
+  }
+
+  .glass-dark {
+    background: hsl(var(--background) / 0.85);
+    backdrop-filter: blur(20px);
+    -webkit-backdrop-filter: blur(20px);
+    border: 1px solid hsl(var(--gold) / 0.1);
+  }
+
+  .chat-scrollbar-light::-webkit-scrollbar {
+    width: 6px;
+  }
+
+  .chat-scrollbar-light::-webkit-scrollbar-track {
+    background: #f1f5f9;
+    border-radius: 10px;
+  }
+
+  .chat-scrollbar-light::-webkit-scrollbar-thumb {
+    background: linear-gradient(180deg, #f59e0b 0%, #d97706 100%);
+    border-radius: 10px;
+  }
+
+  .chat-scrollbar-light::-webkit-scrollbar-thumb:hover {
+    background: linear-gradient(180deg, #fbbf24 0%, #f59e0b 100%);
+  }
 }
 
 @layer utilities {
@@ -245,4 +300,14 @@
       transform: scale(1);
     }
   }
+}
+
+@keyframes typingBounce {
+  0%, 80%, 100% { transform: scale(0); }
+  40% { transform: scale(1); }
+}
+
+@keyframes messagePop {
+  0% { opacity: 0; transform: translateY(10px) scale(0.95); }
+  100% { opacity: 1; transform: translateY(0) scale(1); }
 }
