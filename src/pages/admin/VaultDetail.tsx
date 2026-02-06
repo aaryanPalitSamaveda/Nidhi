@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, useRef, useMemo } from 'react';
+import React, { useEffect, useState, useCallback, useRef, useMemo } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
 import { DashboardLayout } from '@/components/layout/DashboardLayout';
 import { supabase } from '@/integrations/supabase/client';
@@ -7,15 +7,10 @@ import { Input } from '@/components/ui/input';
 import {
   Dialog,
   DialogContent,
-  DialogDescription,
   DialogHeader,
   DialogTitle,
   DialogTrigger,
 } from '@/components/ui/dialog';
-import { useToast } from '@/hooks/use-toast';
-import { useAuth } from '@/contexts/AuthContext';
-import DocumentViewerModal from '@/components/DocumentViewerModal';
-import { FileUploadProgress, FileUploadProgress as FileUploadProgressType } from '@/components/FileUploadProgress';
 import { Progress } from '@/components/ui/progress';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
@@ -23,6 +18,12 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import jsPDF from 'jspdf';
 import html2canvas from 'html2canvas';
+import { runCIMGeneration } from '@/services/CIM/cimGenerationController';
+import type { CIMReport } from '@/services/CIM/types';
+import { useToast } from '@/hooks/use-toast';
+import { useAuth } from '@/contexts/AuthContext';
+import DocumentViewerModal from '@/components/DocumentViewerModal';
+import { FileUploadProgress, FileUploadProgress as FileUploadProgressType } from '@/components/FileUploadProgress';
 import {
   FolderLock,
   Folder,
@@ -81,7 +82,7 @@ interface VaultInfo {
   description: string | null;
 }
 
-export default function VaultDetail() {
+function VaultDetailInner() {
   const { vaultId } = useParams<{ vaultId: string }>();
   const { user } = useAuth();
   const { toast } = useToast();
@@ -93,7 +94,6 @@ export default function VaultDetail() {
   const [currentFolderId, setCurrentFolderId] = useState<string | null>(null);
   const [breadcrumbs, setBreadcrumbs] = useState<{ id: string | null; name: string }[]>([]);
   const [loading, setLoading] = useState(true);
-  const [folderIndex, setFolderIndex] = useState<Record<string, { id: string; name: string; parent_id: string | null }>>({});
   const [isCreateFolderOpen, setIsCreateFolderOpen] = useState(false);
   const [newFolderName, setNewFolderName] = useState('');
   const [isUploading, setIsUploading] = useState(false);
@@ -107,8 +107,6 @@ export default function VaultDetail() {
   const [investorNdaTemplate, setInvestorNdaTemplate] = useState<any>(null);
   const [renamingItem, setRenamingItem] = useState<{ type: 'folder' | 'document'; id: string; currentName: string } | null>(null);
   const [renameValue, setRenameValue] = useState('');
-
-  // Audit module (admin-only)
   const [isAuditDialogOpen, setIsAuditDialogOpen] = useState(false);
   const [isAuditExpanded, setIsAuditExpanded] = useState(true);
   const [auditJobId, setAuditJobId] = useState<string | null>(null);
@@ -117,167 +115,216 @@ export default function VaultDetail() {
   const [auditError, setAuditError] = useState<string | null>(null);
   const reportContentRef = useRef<HTMLDivElement>(null);
   const isRestartingRef = useRef(false);
-
-  // Build a folder index once per vault (avoids N+1 queries when building breadcrumbs)
-  useEffect(() => {
-    if (!vaultId) return;
-    let cancelled = false;
-    (async () => {
-      const { data, error } = await supabase
-        .from('folders')
-        .select('id, name, parent_id')
-        .eq('vault_id', vaultId);
-      if (cancelled) return;
-      if (error) {
-        console.warn('Failed to build folder index:', error);
-        setFolderIndex({});
-        return;
+  const sanitizedReportMarkdown = useMemo(() => {
+    const safeStringify = (input: unknown) => {
+      try {
+        const seen = new WeakSet();
+        return JSON.stringify(
+          input,
+          (_key, value) => {
+            if (typeof value === 'bigint') return value.toString();
+            if (typeof value === 'object' && value !== null) {
+              if (seen.has(value)) return '[Circular]';
+              seen.add(value);
+            }
+            return value;
+          },
+          2
+        );
+      } catch {
+        return '';
       }
-      const idx: Record<string, { id: string; name: string; parent_id: string | null }> = {};
-      (data || []).forEach((f) => {
-        idx[f.id] = { id: f.id, name: f.name, parent_id: f.parent_id };
-      });
-      setFolderIndex(idx);
-    })();
-    return () => {
-      cancelled = true;
     };
-  }, [vaultId]);
+
+    try {
+      const raw = auditJob?.report_markdown;
+      const md = typeof raw === 'string' ? raw : raw ? safeStringify(raw) : '';
+      return md
+        .replace(/^[=]{5,}\s*$/gm, '')
+        .replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/gu, '')
+        .replace(/non-hallucination policy.*$/gmi, '')
+        .replace(/^```+$/gm, '')
+        .replace(/^\*\*\s*([A-Z0-9][A-Z0-9\s:#\-]{6,})\s*\*\*$/gm, '$1')
+        .replace(/^\*\*\s*(RED FLAG[^*]+)\s*\*\*$/gmi, '$1')
+        .replace(/\n{3,}/g, '\n\n')
+        .trim();
+    } catch {
+      return '';
+    }
+  }, [auditJob?.report_markdown]);
+  const [isCimDialogOpen, setIsCimDialogOpen] = useState(false);
+  const [cimReport, setCimReport] = useState<CIMReport | null>(null);
+  const [cimIsRunning, setCimIsRunning] = useState(false);
+  const [cimError, setCimError] = useState<string | null>(null);
+  const [cimProgress, setCimProgress] = useState(0);
+  const [cimEtaSeconds, setCimEtaSeconds] = useState<number | null>(null);
+  const [cimRunId, setCimRunId] = useState<string | null>(null);
+  const cimPreviewRef = useRef<HTMLDivElement>(null);
+  const cimProgressTimerRef = useRef<number | null>(null);
+  const cimStartedAtRef = useRef<number | null>(null);
+  const cimHtml = useMemo(() => {
+    const raw = cimReport?.cimReport;
+    return typeof raw === 'string' ? raw : '';
+  }, [cimReport?.cimReport]);
+  const cimBackendUrl = useMemo(() => {
+    const raw = import.meta.env.VITE_CIM_BACKEND_URL || 'http://localhost:3003';
+    return raw.replace(/\/$/, '');
+  }, []);
+
+  const loadLatestCim = useCallback(async () => {
+    if (!vaultId) return;
+    try {
+      const { data, error } = await supabase
+        .from('cim_reports')
+        .select('id, vault_id, vault_name, created_by, created_at, report_content, files_analyzed')
+        .eq('vault_id', vaultId)
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      if (error || !data) return;
+      const reportContent = typeof data.report_content === 'string'
+        ? data.report_content
+        : data.report_content
+        ? JSON.stringify(data.report_content, null, 2)
+        : '';
+      setCimReport({
+        reportId: data.id || `cim_${Date.now()}`,
+        vaultId: data.vault_id,
+        vaultName: data.vault_name || vault?.name || 'Dataroom',
+        createdBy: data.created_by || 'unknown',
+        timestamp: data.created_at || new Date().toISOString(),
+        cimReport: reportContent,
+        filesAnalyzed: data.files_analyzed || 0,
+        status: 'completed',
+      });
+    } catch {
+      // Ignore load errors for now
+    }
+  }, [vaultId, vault?.name]);
 
   const fetchVaultData = useCallback(async () => {
     if (!vaultId || !user) return;
 
-    // Don't show loading spinner if we already have vault data (refresh scenario)
-    const isRefresh = !!vault;
-    if (!isRefresh) {
-      setLoading(true);
+    try {
+      // Fetch vault info
+      const { data: vaultData, error: vaultError } = await supabase
+        .from('vaults')
+        .select('id, name, description')
+        .eq('id', vaultId)
+        .single();
+
+      if (vaultError) throw vaultError;
+      setVault(vaultData);
+
+      // Fetch NDA templates for both seller and investor
+      const { data: ndaTemplates } = await supabase
+        .from('nda_templates')
+        .select('*')
+        .eq('vault_id', vaultId);
+      
+      if (ndaTemplates) {
+        const sellerTemplate = ndaTemplates.find(t => t.role_type === 'seller');
+        const investorTemplate = ndaTemplates.find(t => t.role_type === 'investor');
+        setSellerNdaTemplate(sellerTemplate || null);
+        setInvestorNdaTemplate(investorTemplate || null);
+      } else {
+        setSellerNdaTemplate(null);
+        setInvestorNdaTemplate(null);
       }
 
-    try {
-      // Step 1: Fetch vault name FIRST (fastest, needed for header)
-      const vaultRes = await supabase.from('vaults').select('id, name, description').eq('id', vaultId).single();
-      if (vaultRes.error) throw vaultRes.error;
-      setVault(vaultRes.data);
-      
-      // CRITICAL: Stop blocking UI immediately after we have vault name
-      setLoading(false);
+      // Log vault access
+      try {
+        await supabase.rpc('log_activity', {
+          p_vault_id: vaultId,
+          p_action: 'view',
+          p_resource_type: 'vault',
+          p_document_id: null,
+          p_folder_id: null,
+          p_resource_name: vaultData.name,
+          p_metadata: null,
+        });
+      } catch (logError) {
+        // Don't show error, logging is not critical
+        console.error('Error logging vault access:', logError);
+      }
 
-      // Step 2: Fetch folders and documents in parallel (non-blocking now)
-      const [foldersRes, docsRes] = await Promise.all([
-        (() => {
-          let q = supabase.from('folders').select('*').eq('vault_id', vaultId).order('name');
-          q = currentFolderId === null ? q.is('parent_id', null) : q.eq('parent_id', currentFolderId);
-          return q;
-        })(),
-        (() => {
-          let q = supabase
-            .from('documents')
-            .select('id, name, file_path, file_size, file_type, created_at, updated_by, last_updated_at')
+      // Fetch folders in current directory
+      let foldersQuery = supabase
+        .from('folders')
+        .select('*')
         .eq('vault_id', vaultId)
         .order('name');
-          q = currentFolderId === null ? q.is('folder_id', null) : q.eq('folder_id', currentFolderId);
-          return q;
-        })(),
-      ]);
+      
+      if (currentFolderId === null) {
+        foldersQuery = foldersQuery.is('parent_id', null);
+      } else {
+        foldersQuery = foldersQuery.eq('parent_id', currentFolderId);
+      }
+      
+      const { data: foldersData, error: foldersError } = await foldersQuery;
 
-      if (foldersRes.error) {
-        console.error('Error fetching folders:', foldersRes.error);
+      if (foldersError) {
+        console.error('Error fetching folders:', foldersError);
         toast({
           title: 'Error loading folders',
-          description: foldersRes.error.message || 'Failed to load folders. You may not have permission.',
+          description: foldersError.message || 'Failed to load folders. You may not have permission.',
           variant: 'destructive',
         });
-        setFolders([]);
-      } else {
-        setFolders(foldersRes.data || []);
       }
+      setFolders(foldersData || []);
 
-      if (docsRes.error) {
-        console.error('Error fetching documents:', docsRes.error);
-        console.error('Error details:', JSON.stringify(docsRes.error, null, 2));
-        toast({
-          title: 'Error loading documents',
-          description: docsRes.error.message || (docsRes.error as any).details || 'Failed to load documents. You may not have permission.',
-          variant: 'destructive',
-        });
-        setDocuments([]);
-      } else {
-        // Set documents immediately (fast). We enrich with activity/profile data in the background.
-        setDocuments(docsRes.data || []);
-      }
-
-      // Background tasks (non-blocking)
-      // 1) NDA templates (only needed for the NDA section)
-      supabase
-        .from('nda_templates')
-        .select('id, role_type, file_path, name, created_at')
+      // Fetch documents in current directory
+      let docsQuery = supabase
+        .from('documents')
+        .select('id, name, file_path, file_size, file_type, created_at, updated_by, last_updated_at')
         .eq('vault_id', vaultId)
-        .then(({ data: ndaTemplates }) => {
-          const sellerTemplate = ndaTemplates?.find((t: any) => t.role_type === 'seller');
-          const investorTemplate = ndaTemplates?.find((t: any) => t.role_type === 'investor');
-          setSellerNdaTemplate(sellerTemplate || null);
-          setInvestorNdaTemplate(investorTemplate || null);
-        })
-        .catch((e) => console.warn('Failed to load NDA templates:', e));
+        .order('name');
+      
+      if (currentFolderId === null) {
+        docsQuery = docsQuery.is('folder_id', null);
+      } else {
+        docsQuery = docsQuery.eq('folder_id', currentFolderId);
+      }
+      
+      const { data: docsData, error: docsError } = await docsQuery;
 
-      // 2) Log vault access (non-critical)
-      (async () => {
-        try {
-          await supabase.rpc('log_activity', {
-            p_vault_id: vaultId,
-            p_action: 'view',
-            p_resource_type: 'vault',
-            p_document_id: null,
-            p_folder_id: null,
-            p_resource_name: vaultRes.data.name,
-            p_metadata: null,
-          });
-        } catch (e) {
-          console.warn('Error logging vault access:', e);
-        }
-      })();
-
-      // 3) Enrich documents with updated_by profile + recent activity (expensive)
-      // Do it asynchronously so the list renders immediately.
-      const docsData = docsRes.data || [];
-      if (docsData.length > 0) {
-        // Limit enrichment on large folders; prevents huge activity_logs queries
-        const MAX_ENRICH_DOCS = 60;
-        const docsForEnrichment = docsData.slice(0, MAX_ENRICH_DOCS);
-        const updatedByIds = [...new Set(docsForEnrichment.map((d: any) => d.updated_by).filter(Boolean))] as string[];
-        const docIds = docsForEnrichment.map((d: any) => d.id);
+      // Fetch updated_by profiles and recent activities for documents
+      if (docsData) {
+        const updatedByIds = [...new Set(docsData.map(d => d.updated_by).filter(Boolean))] as string[];
+        const docIds = docsData.map(d => d.id);
         
-        setTimeout(async () => {
-          try {
+        // Fetch profiles
         let profilesMap = new Map();
         if (updatedByIds.length > 0) {
           const { data: profiles } = await supabase
             .from('profiles')
             .select('id, email, full_name')
             .in('id', updatedByIds);
-              profilesMap = new Map(profiles?.map((p) => [p.id, p]) || []);
+          profilesMap = new Map(profiles?.map(p => [p.id, p]) || []);
         }
         
+        // Fetch recent activities (last view and last edit) for each document
         const { data: activities } = await supabase
           .from('activity_logs')
           .select('document_id, action, created_at, user_id')
           .in('document_id', docIds)
           .in('action', ['view', 'edit'])
-              .order('created_at', { ascending: false })
-              .limit(300);
+          .order('created_at', { ascending: false });
 
-            const activityUserIds = [...new Set(activities?.map((a) => a.user_id).filter(Boolean) || [])] as string[];
+        // Get user profiles for activities
+        const activityUserIds = [...new Set(activities?.map(a => a.user_id).filter(Boolean) || [])] as string[];
         let activityProfilesMap = new Map();
         if (activityUserIds.length > 0) {
           const { data: activityProfiles } = await supabase
             .from('profiles')
             .select('id, email, full_name')
             .in('id', activityUserIds);
-              activityProfilesMap = new Map(activityProfiles?.map((p) => [p.id, p]) || []);
+          activityProfilesMap = new Map(activityProfiles?.map(p => [p.id, p]) || []);
         }
 
+        // Group activities by document and get most recent view and edit
         const activitiesByDoc = new Map<string, { lastView?: any; lastEdit?: any }>();
-            activities?.forEach((activity) => {
+        activities?.forEach(activity => {
           if (!activitiesByDoc.has(activity.document_id)) {
             activitiesByDoc.set(activity.document_id, {});
           }
@@ -296,9 +343,12 @@ export default function VaultDetail() {
           }
         });
         
-            const enriched = docsData.map((doc: any) => {
+        // Combine documents with profiles and activities
+        const docsWithData = docsData.map(doc => {
           const docActivities = activitiesByDoc.get(doc.id);
           const recentActivities: DocumentActivity[] = [];
+          
+          // Always show view first, then edit
           if (docActivities?.lastView && docActivities.lastView.created_at !== docActivities?.lastEdit?.created_at) {
             recentActivities.push(docActivities.lastView);
           }
@@ -309,17 +359,23 @@ export default function VaultDetail() {
           return {
             ...doc,
             updated_by_profile: doc.updated_by ? profilesMap.get(doc.updated_by) : undefined,
-                recent_activities: recentActivities.slice(0, 2),
+            recent_activities: recentActivities.slice(0, 2), // Show max 2 activities
           };
         });
         
-            setDocuments(enriched);
-          } catch (e) {
-            console.warn('Document enrichment failed (non-blocking):', e);
-          }
-        }, 0);
+        setDocuments(docsWithData);
       }
 
+      if (docsError) {
+        console.error('Error fetching documents:', docsError);
+        console.error('Error details:', JSON.stringify(docsError, null, 2));
+        toast({
+          title: 'Error loading documents',
+          description: docsError.message || docsError.details || 'Failed to load documents. You may not have permission.',
+          variant: 'destructive',
+        });
+        setDocuments([]);
+      }
     } catch (error: any) {
       console.error('Error fetching vault data:', error);
       console.error('Error stack:', error?.stack);
@@ -329,7 +385,6 @@ export default function VaultDetail() {
         variant: 'destructive',
       });
     } finally {
-      // fetchVaultData might already have setLoading(false) earlier; keep as a safe fallback.
       setLoading(false);
     }
   }, [vaultId, currentFolderId, toast]);
@@ -346,17 +401,29 @@ export default function VaultDetail() {
       const crumbs: { id: string | null; name: string }[] = [{ id: null, name: vault.name }];
       
       if (currentFolderId) {
-        // Fast path: use folderIndex (no network)
         let folderId: string | null = currentFolderId;
         const folderPath: { id: string; name: string }[] = [];
-        const seen = new Set<string>();
-        while (folderId && !seen.has(folderId)) {
-          seen.add(folderId);
-          const folder = folderIndex[folderId];
-          if (!folder) break;
+        
+        while (folderId) {
+          const { data: folder, error: folderError } = await supabase
+            .from('folders')
+            .select('id, name, parent_id')
+            .eq('id', folderId)
+            .single();
+          
+          if (folderError) {
+            console.error('Error fetching folder for breadcrumbs:', folderError);
+            break;
+          }
+          
+          if (folder) {
             folderPath.unshift({ id: folder.id, name: folder.name });
             folderId = folder.parent_id;
+          } else {
+            break;
           }
+        }
+        
         crumbs.push(...folderPath);
       }
       
@@ -364,7 +431,8 @@ export default function VaultDetail() {
     };
     
     buildBreadcrumbs();
-  }, [vault, currentFolderId, folderIndex]);
+  }, [vault, currentFolderId]);
+
 
   const handleCreateFolder = async () => {
     if (!newFolderName.trim() || !vaultId || !user) return;
@@ -1100,14 +1168,14 @@ export default function VaultDetail() {
       } catch (watermarkError) {
         console.error('Watermarking failed, downloading original file:', watermarkError);
         // If watermarking fails, download original file
-      const url = URL.createObjectURL(data);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = fileName;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
+        const url = URL.createObjectURL(data);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = fileName;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
       }
 
       // Log download activity
@@ -1143,12 +1211,9 @@ export default function VaultDetail() {
 
   const estimateAuditRemainingSeconds = useCallback((job: any) => {
     try {
-      // Prefer server-calculated ETA if available (more accurate)
       if (typeof job?.estimated_remaining_seconds === 'number' && job.estimated_remaining_seconds >= 0) {
         return job.estimated_remaining_seconds;
       }
-      
-      // Fallback to client-side calculation
       if (!job?.started_at) return null;
       const total = Number(job?.total_files ?? 0);
       const processed = Number(job?.processed_files ?? 0);
@@ -1174,28 +1239,6 @@ export default function VaultDetail() {
     return `${ss}s`;
   }, []);
 
-  const reportMeta = useMemo(() => {
-    const rawDate = auditJob?.completed_at || auditJob?.updated_at || auditJob?.created_at;
-    const date = rawDate ? new Date(rawDate) : new Date();
-    const safeDate = Number.isNaN(date.getTime()) ? new Date() : date;
-    return {
-      dateLabel: safeDate.toLocaleDateString('en-IN', {
-        day: '2-digit',
-        month: 'short',
-        year: 'numeric',
-      }),
-      timeLabel: safeDate.toLocaleTimeString('en-IN', {
-        hour: '2-digit',
-        minute: '2-digit',
-      }),
-    };
-  }, [auditJob?.completed_at, auditJob?.created_at, auditJob?.updated_at]);
-
-  const reportMarkdown = useMemo(() => {
-    const md = auditJob?.report_markdown || '';
-    return md.replace(/^##\s+Forensic AI Audit Report\s*\n+/i, '');
-  }, [auditJob?.report_markdown]);
-
   const startAudit = useCallback(async () => {
     if (!vaultId) return;
     setAuditError(null);
@@ -1204,173 +1247,103 @@ export default function VaultDetail() {
     setAuditJobId(null);
 
     try {
-      console.log('Starting audit for vault:', vaultId);
-      console.log('Supabase URL:', import.meta.env.VITE_SUPABASE_URL);
-      console.log('Function name: audit-vault');
-      
-                // Refresh session to ensure we have a fresh token
-                const { data: { session: currentSession }, error: sessionError } = await supabase.auth.getSession();
-                if (!currentSession || sessionError) {
-                    throw new Error('No active session. Please log in again.');
-                }
-
-                // Explicitly refresh the token to ensure it's valid
-                const { data: { session: refreshedSession }, error: refreshError } = await supabase.auth.refreshSession();
-                const session = refreshedSession || currentSession;
-                
-                if (refreshError) {
-                    console.warn('Token refresh failed, using current session:', refreshError);
-                }
-
-                // Ensure we have a valid access token
-                if (!session?.access_token) {
-                    throw new Error('No access token in session. Please log in again.');
-                }
-
-                console.log('Session verified, user:', session.user.email);
-                console.log('Token expiry:', session.expires_at ? new Date(session.expires_at * 1000).toISOString() : 'unknown');
-                console.log('Token (first 30 chars):', session.access_token.substring(0, 30) + '...');
-                
-                // Verify token is not expired
-                const now = Math.floor(Date.now() / 1000);
-                if (session.expires_at && session.expires_at < now) {
-                    throw new Error(`Token expired. Expires: ${new Date(session.expires_at * 1000).toISOString()}, Now: ${new Date().toISOString()}`);
-                }
-                
-                // Verify token format (should be a JWT with 3 parts)
-                const tokenParts = session.access_token.split('.');
-                if (tokenParts.length !== 3) {
-                    throw new Error(`Invalid token format. Expected 3 parts, got ${tokenParts.length}`);
-                }
-                console.log('Token format verified: 3 parts');
-
-                // Use Supabase client's built-in function invocation (handles auth automatically)
-                // This is more reliable than manual fetch
-                const { data, error } = await supabase.functions.invoke('audit-vault', {
-                    body: { action: 'start', vaultId },
-                });
-      
-                console.log('Function response:', { data, error });
-                
-                if (error) {
-                    console.error('Edge Function error:', error);
-                    console.error('Error details:', JSON.stringify(error, null, 2));
-                    console.error('Error name:', error?.name);
-                    console.error('Error message:', error?.message);
-                    console.error('Error context:', error?.context);
-                    
-                    // If it's a 401, the token might be invalid
-                    if (error?.message?.includes('401') || error?.message?.includes('Invalid JWT')) {
-                        console.error('=== AUTHENTICATION ERROR ===');
-                        console.error('Token might be invalid or expired');
-                        console.error('Current session expiry:', session.expires_at ? new Date(session.expires_at * 1000).toISOString() : 'unknown');
-                    }
-        
-        // If Supabase client invoke fails, try manual fetch as fallback
-        console.log('Trying manual fetch as fallback...');
-        const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
-        const functionUrl = `${supabaseUrl}/functions/v1/audit-vault`;
-        
-        const response = await fetch(functionUrl, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${session.access_token}`,
-            'apikey': import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY || '',
-          },
-          body: JSON.stringify({ action: 'start', vaultId }),
-        });
-        
-        const responseText = await response.text();
-        console.log(`Manual fetch HTTP ${response.status} response:`, responseText);
-        
-        if (!response.ok) {
-          let errorMessage = 'Unknown error';
-          try {
-            const errorBody = JSON.parse(responseText);
-            errorMessage = errorBody.error || errorBody.message || errorMessage;
-          } catch {
-            errorMessage = responseText || errorMessage;
-          }
-          throw new Error(`Edge Function error (${response.status}): ${errorMessage}`);
-        }
-        
-        const result = { data: JSON.parse(responseText), error: null };
-        const { data: finalData } = result;
-        
-        if (!finalData?.jobId) {
-          throw new Error('Audit start failed (no jobId returned)');
-        }
-        
-        // Clear any previous errors since we succeeded
-        setAuditError(null);
-        setAuditJobId(finalData.jobId);
-        localStorage.setItem(`nidhi:auditJobId:${vaultId}`, finalData.jobId);
-        
-        // Kick off first run
-        const runResponse = await fetch(`${supabaseUrl}/functions/v1/audit-vault`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${session.access_token}`,
-            'apikey': import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY || '',
-          },
-          body: JSON.stringify({ action: 'run', jobId: finalData.jobId, maxFiles: 2 }),
-        });
-        
-        if (!runResponse.ok) {
-          const runErrorText = await runResponse.text();
-          throw new Error(`Run failed (${runResponse.status}): ${runErrorText}`);
-        }
-        
-        const runData = await runResponse.json();
-        setAuditJob(runData?.job ?? null);
-        setAuditIsRunning(false);
-        return;
-      }
-      
-      // Success path from Supabase client invoke
+      const { data, error } = await supabase.functions.invoke('audit-vault', {
+        body: { action: 'start', vaultId },
+      });
+      if (error) throw error;
       if (!data?.jobId) {
-        console.error('No jobId in response:', data);
         throw new Error('Audit start failed (no jobId returned)');
       }
 
-      // Clear any previous errors since we succeeded
-      setAuditError(null);
       setAuditJobId(data.jobId);
       localStorage.setItem(`nidhi:auditJobId:${vaultId}`, data.jobId);
 
-      // Kick off first run immediately
       const runRes = await supabase.functions.invoke('audit-vault', {
         body: { action: 'run', jobId: data.jobId, maxFiles: 2 },
       });
-      
       if (runRes.error) throw runRes.error;
       setAuditJob(runRes.data?.job ?? null);
-      setAuditIsRunning(false);
     } catch (e: any) {
-      console.error('Failed to start audit:', e);
-      const errorMsg = e?.message || e?.error || 'Failed to start audit';
-      const helpfulMsg = errorMsg.includes('Failed to send') 
-        ? 'Edge Function not accessible. Please ensure it is deployed: `supabase functions deploy audit-vault`'
-        : errorMsg;
-      setAuditError(helpfulMsg);
+      const msg = e?.message || e?.error || 'Failed to start audit';
+      setAuditError(msg);
+    } finally {
       setAuditIsRunning(false);
+    }
+  }, [vaultId]);
+
+  const runAuditBatch = useCallback(async () => {
+    if (!auditJobId || auditIsRunning) return;
+    setAuditIsRunning(true);
+    try {
+      const { data, error } = await supabase.functions.invoke('audit-vault', {
+        body: { action: 'run', jobId: auditJobId, maxFiles: 2 },
+      });
+      if (error) throw error;
+      setAuditJob(data?.job ?? null);
+      setAuditError(null);
+    } catch (e: any) {
+      const msg = e?.message || e?.error || 'Audit batch failed';
+      setAuditError(msg);
+    } finally {
+      setAuditIsRunning(false);
+    }
+  }, [auditJobId, auditIsRunning]);
+
+  const loadAuditState = useCallback(async () => {
+    if (!vaultId || isRestartingRef.current) return;
+    setAuditError(null);
+
+    const persistedJobId = localStorage.getItem(`nidhi:auditJobId:${vaultId}`);
+    if (persistedJobId) {
+      setAuditJobId(persistedJobId);
+      try {
+        const { data, error } = await supabase.functions.invoke('audit-vault', {
+          body: { action: 'status', jobId: persistedJobId },
+        });
+        if (!error && data?.job) {
+          if (data.job.status === 'cancelled') {
+            setAuditJobId(null);
+            setAuditJob(null);
+            localStorage.removeItem(`nidhi:auditJobId:${vaultId}`);
+            return;
+          }
+          setAuditJob(data.job);
+          return;
+        }
+      } catch (e) {
+        console.warn('Audit status check failed, will try DB lookup:', e);
+      }
+    }
+
+    try {
+      const { data: latestJob } = await supabase
+        .from('audit_jobs')
+        .select('*')
+        .eq('vault_id', vaultId)
+        .neq('status', 'cancelled')
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      if (latestJob?.id) {
+        setAuditJobId(latestJob.id);
+        setAuditJob(latestJob);
+        localStorage.setItem(`nidhi:auditJobId:${vaultId}`, latestJob.id);
+      }
+    } catch (e: any) {
+      console.warn('Failed to load latest audit job:', e?.message || e);
     }
   }, [vaultId]);
 
   const stopAndRestartAudit = useCallback(async () => {
     if (!vaultId || isRestartingRef.current) return;
-    
     isRestartingRef.current = true;
     setAuditIsRunning(true);
-    
-    // Capture current job ID before clearing (for toast message)
+
     const hadExistingJob = !!auditJobId;
     const jobIdToCancel = auditJobId;
-    
+
     try {
-      // Cancel current job if it exists
       if (jobIdToCancel) {
         try {
           await supabase.functions.invoke('audit-vault', {
@@ -1378,32 +1351,27 @@ export default function VaultDetail() {
           });
         } catch (e) {
           console.warn('Failed to cancel previous job:', e);
-          // Continue anyway to start a new audit
         }
       }
 
-      // Clear current state completely
       setAuditJobId(null);
       setAuditJob(null);
       setAuditError(null);
       localStorage.removeItem(`nidhi:auditJobId:${vaultId}`);
 
-      // Wait for cancellation to complete and state to clear (only if we had a job to cancel)
       if (jobIdToCancel) {
-        await new Promise(resolve => setTimeout(resolve, 1000));
+        await new Promise(resolve => setTimeout(resolve, 500));
       }
 
-      // Start a new audit
       await startAudit();
-      
+
       toast({
         title: hadExistingJob ? 'Audit Restarted' : 'Audit Started',
-        description: hadExistingJob 
+        description: hadExistingJob
           ? 'The previous audit has been cancelled and a new audit has been started.'
           : 'A new audit has been started.',
       });
     } catch (e: any) {
-      console.error('Failed to stop and restart audit:', e);
       toast({
         title: 'Error',
         description: e?.message || 'Failed to restart audit. Please try again.',
@@ -1415,238 +1383,6 @@ export default function VaultDetail() {
     }
   }, [vaultId, auditJobId, startAudit, toast]);
 
-  const loadAuditState = useCallback(async () => {
-    if (!vaultId || isRestartingRef.current) return; // Don't load state during restart
-    setAuditError(null);
-
-    // Prefer persisted job id for this vault
-    const persistedJobId = localStorage.getItem(`nidhi:auditJobId:${vaultId}`);
-    if (persistedJobId) {
-      setAuditJobId(persistedJobId);
-      try {
-        const { data, error } = await supabase.functions.invoke('audit-vault', {
-          body: { action: 'status', jobId: persistedJobId },
-        });
-        if (error) throw error;
-        if (data?.job) {
-          // Skip cancelled jobs - clear state instead
-          if (data.job.status === 'cancelled') {
-            setAuditJobId(null);
-            setAuditJob(null);
-            localStorage.removeItem(`nidhi:auditJobId:${vaultId}`);
-            return;
-          }
-          setAuditJob(data.job);
-          return;
-        }
-      } catch (e: any) {
-        // If status fails (job deleted), fall through to DB lookup
-        console.warn('Audit status check failed, will try DB lookup:', e?.message || e);
-      }
-    }
-
-    // Fallback: load latest audit job for this vault from DB (admin-only via RLS)
-    // Exclude cancelled jobs - they should not be reloaded
-    try {
-      const { data: latestJob, error: latestErr } = await supabase
-        .from('audit_jobs')
-        .select('*')
-        .eq('vault_id', vaultId)
-        .neq('status', 'cancelled') // Exclude cancelled jobs
-        .order('created_at', { ascending: false })
-        .limit(1)
-        .maybeSingle();
-
-      if (latestErr) throw latestErr;
-      if (latestJob?.id) {
-        // Skip cancelled jobs - don't load them
-        if (latestJob.status === 'cancelled') {
-          setAuditJobId(null);
-          setAuditJob(null);
-          localStorage.removeItem(`nidhi:auditJobId:${vaultId}`);
-          return;
-        }
-        setAuditJobId(latestJob.id);
-        setAuditJob(latestJob);
-        localStorage.setItem(`nidhi:auditJobId:${vaultId}`, latestJob.id);
-      }
-    } catch (e: any) {
-      console.warn('Failed to load latest audit job:', e?.message || e);
-    }
-  }, [vaultId]);
-
-  const runAuditBatch = useCallback(async () => {
-    if (!auditJobId) return;
-    if (auditIsRunning) return;
-    
-    setAuditIsRunning(true);
-    
-    try {
-      // Retry logic for transient network errors
-      const maxRetries = 3;
-      let lastError: any = null;
-      
-      for (let attempt = 0; attempt <= maxRetries; attempt++) {
-      try {
-        // Wait before retry (exponential backoff: 0s, 1s, 2s)
-        if (attempt > 0) {
-          await new Promise(resolve => setTimeout(resolve, 1000 * attempt));
-        }
-        
-        // Try Supabase client invoke first
-        const { data, error } = await supabase.functions.invoke('audit-vault', {
-          body: { action: 'run', jobId: auditJobId, maxFiles: 2 },
-        });
-        
-        if (error) {
-          // Check if it's a transient network error
-          const errorMsg = error?.message || String(error);
-          const isTransientError = 
-            errorMsg.includes('Failed to send') ||
-            errorMsg.includes('Failed to fetch') ||
-            errorMsg.includes('NetworkError') ||
-            errorMsg.includes('Network request failed') ||
-            errorMsg.includes('fetch');
-          
-          if (isTransientError && attempt < maxRetries) {
-            // Don't log transient errors, just retry silently
-            lastError = error;
-            continue;
-          }
-          
-          // If Supabase client fails with non-transient error, try manual fetch as fallback
-          if (!isTransientError) {
-            console.warn('Supabase invoke failed, trying manual fetch:', error);
-          }
-          
-          const { data: { session } } = await supabase.auth.getSession();
-          if (!session?.access_token) {
-            if (isTransientError && attempt < maxRetries) {
-              lastError = error;
-              continue;
-            }
-            throw error;
-          }
-          
-          const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
-          const response = await fetch(`${supabaseUrl}/functions/v1/audit-vault`, {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'Authorization': `Bearer ${session.access_token}`,
-              'apikey': import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY || '',
-            },
-            body: JSON.stringify({ action: 'run', jobId: auditJobId, maxFiles: 2 }),
-          });
-          
-          if (!response.ok) {
-            const errorText = await response.text();
-            const httpErrorMsg = `Batch failed (${response.status}): ${errorText}`;
-            
-            // If it's a 5xx error (server error), it might be transient
-            if (response.status >= 500 && response.status < 600 && attempt < maxRetries) {
-              lastError = new Error(httpErrorMsg);
-              continue;
-            }
-            
-            throw new Error(httpErrorMsg);
-          }
-          
-          const fallbackData = await response.json();
-          setAuditJob(fallbackData?.job ?? null);
-          // Clear error on success
-          setAuditError(null);
-          return; // Success, exit retry loop
-        } else {
-          setAuditJob(data?.job ?? null);
-          // Clear error on success
-          setAuditError(null);
-          return; // Success, exit retry loop
-        }
-      } catch (e: any) {
-        lastError = e;
-        const errorMsg = e?.message || String(e);
-        
-        // Check if it's a transient network error
-        const isTransientError = 
-          errorMsg.includes('Failed to fetch') ||
-          errorMsg.includes('Failed to send') ||
-          errorMsg.includes('NetworkError') ||
-          errorMsg.includes('Network request failed') ||
-          errorMsg.includes('fetch') ||
-          errorMsg.includes('TypeError');
-        
-        // If it's a transient error and we have retries left, continue
-        if (isTransientError && attempt < maxRetries) {
-          // Don't log or show transient errors, just retry silently
-          continue;
-        }
-        
-        // If we've exhausted retries or it's not a transient error, handle it
-        if (attempt === maxRetries || !isTransientError) {
-          // Only log/show non-transient errors or persistent transient errors
-          if (!isTransientError) {
-            console.error('Audit batch failed (non-transient):', e);
-          } else {
-            console.warn('Audit batch failed after retries (transient):', e);
-          }
-          
-          // Only set error if it's not a transient network issue and job is still running
-          if (!isTransientError && auditJob?.status !== 'completed' && auditJob?.status !== 'failed') {
-            setAuditError(errorMsg);
-          }
-          break; // Exit retry loop
-        }
-      }
-    }
-    
-    // If we got here after all retries failed, it's a persistent issue
-    // But don't show error if it's transient - the next auto-poll will retry
-    if (lastError) {
-      const errorMsg = lastError?.message || String(lastError);
-      const isTransientError = 
-        errorMsg.includes('Failed to fetch') ||
-        errorMsg.includes('Failed to send') ||
-        errorMsg.includes('NetworkError') ||
-        errorMsg.includes('Network request failed');
-      
-      // Only show persistent errors, not transient ones
-      if (!isTransientError && auditJob?.status !== 'completed' && auditJob?.status !== 'failed') {
-        setAuditError(errorMsg);
-      }
-    }
-    } finally {
-      setAuditIsRunning(false);
-    }
-  }, [auditJobId, auditIsRunning, auditJob?.status]);
-
-  // Load existing audit job state when vault changes (so re-opening doesn't restart)
-  useEffect(() => {
-    loadAuditState();
-  }, [loadAuditState]);
-
-  // Auto-run batches in the background while the vault page is open (dialog can be closed/minimized)
-  useEffect(() => {
-    if (!auditJobId) return;
-    if (auditJob?.status === 'completed' || auditJob?.status === 'failed' || auditJob?.status === 'cancelled') return;
-    if (isRestartingRef.current) return; // Don't auto-run during restart
-
-    const t = setInterval(() => {
-      // Avoid overlapping runs and don't run during restart
-      if (!auditIsRunning && !isRestartingRef.current) {
-        runAuditBatch();
-      }
-    }, 4000);
-
-    return () => clearInterval(t);
-  }, [auditJobId, auditJob?.status, auditIsRunning, runAuditBatch]);
-
-  // Refresh status when dialog is opened (to show the exact stage immediately)
-  useEffect(() => {
-    if (!isAuditDialogOpen) return;
-    loadAuditState();
-  }, [isAuditDialogOpen, loadAuditState]);
-
   const downloadAuditReport = useCallback(async () => {
     const md = auditJob?.report_markdown;
     if (!md || !reportContentRef.current) return;
@@ -1657,181 +1393,139 @@ export default function VaultDetail() {
         description: 'Please wait while the report is being converted to PDF.',
       });
 
-      // Wait a bit for any rendering to complete
-      await new Promise(resolve => setTimeout(resolve, 500));
+      await new Promise(resolve => setTimeout(resolve, 300));
 
-      // Get the rendered HTML content from ReactMarkdown
       const sourceElement = reportContentRef.current;
       const renderedHTML = sourceElement.innerHTML;
-      
+
       if (!renderedHTML || renderedHTML.trim().length === 0) {
         throw new Error('Report content is empty. Please ensure the report is fully loaded.');
       }
 
-      // Create a temporary container with proper styling for PDF (off-screen, not visible)
       const tempDiv = document.createElement('div');
       tempDiv.style.position = 'absolute';
       tempDiv.style.left = '-9999px';
       tempDiv.style.top = '0';
-      tempDiv.style.width = '210mm'; // A4 width
-      tempDiv.style.padding = '12mm';
-      tempDiv.style.backgroundColor = '#f8fafc';
-      tempDiv.style.fontFamily = 'Inter, Arial, Helvetica, sans-serif';
-      tempDiv.style.fontSize = '12pt';
-      tempDiv.style.lineHeight = '1.6';
+      tempDiv.style.width = '210mm';
+      tempDiv.style.padding = '18mm';
+      tempDiv.style.backgroundColor = '#ffffff';
       tempDiv.style.color = '#0f172a';
-      tempDiv.style.overflow = 'auto';
-      
-      // Create inner container with report styles applied inline
+      tempDiv.style.fontFamily = 'Inter, Arial, Helvetica, sans-serif';
+      tempDiv.style.fontSize = '11pt';
+      tempDiv.style.lineHeight = '1.55';
+      tempDiv.style.overflow = 'visible';
+
       const innerDiv = document.createElement('div');
       innerDiv.innerHTML = renderedHTML;
-      
-      // Apply report layout styles inline to ensure they're captured
       innerDiv.style.maxWidth = '100%';
       innerDiv.style.color = '#0f172a';
 
-      const reportPage = innerDiv.querySelector('.audit-report-page') as HTMLElement | null;
-      if (reportPage) {
-        reportPage.style.background = '#ffffff';
-        reportPage.style.border = '1px solid #e2e8f0';
-        reportPage.style.borderRadius = '16px';
-        reportPage.style.boxShadow = '0 12px 24px rgba(15, 23, 42, 0.08)';
-        reportPage.style.overflow = 'hidden';
-      }
+      const headings = innerDiv.querySelectorAll('h1, h2, h3, h4, h5, h6');
+      headings.forEach((h) => {
+        const el = h as HTMLElement;
+        el.style.fontWeight = '700';
+        el.style.color = '#0f172a';
+        el.style.marginTop = '18px';
+        el.style.marginBottom = '8px';
+      });
 
-      const reportHeader = innerDiv.querySelector('.audit-report-header') as HTMLElement | null;
-      if (reportHeader) {
-        reportHeader.style.background = '#ffffff';
-        reportHeader.style.color = '#0f172a';
-        reportHeader.style.padding = '18px 22px';
-        reportHeader.style.borderBottom = '1px solid #e2e8f0';
-      }
-
-      const reportTitle = innerDiv.querySelector('.audit-report-title') as HTMLElement | null;
-      if (reportTitle) {
-        reportTitle.style.fontSize = '18pt';
-        reportTitle.style.fontWeight = '700';
-        reportTitle.style.margin = '6px 0 2px 0';
-      }
-
-      const reportKicker = innerDiv.querySelector('.audit-report-kicker') as HTMLElement | null;
-      if (reportKicker) {
-        reportKicker.style.fontSize = '9pt';
-        reportKicker.style.letterSpacing = '0.2em';
-        reportKicker.style.textTransform = 'uppercase';
-        reportKicker.style.color = '#64748b';
-      }
-
-      const reportMeta = innerDiv.querySelectorAll('.audit-report-chip');
-      reportMeta.forEach((chip) => {
-        const el = chip as HTMLElement;
-        el.style.display = 'inline-block';
-        el.style.padding = '4px 10px';
-        el.style.marginRight = '6px';
-        el.style.marginTop = '6px';
-        el.style.borderRadius = '999px';
-        el.style.fontSize = '9pt';
-        el.style.background = '#f1f5f9';
-        el.style.border = '1px solid #e2e8f0';
+      innerDiv.querySelectorAll('h1').forEach((h) => {
+        const el = h as HTMLElement;
+        el.style.fontSize = '15pt';
         el.style.color = '#0f172a';
       });
 
-      const reportBody = innerDiv.querySelector('.audit-report-body') as HTMLElement | null;
-      if (reportBody) {
-        reportBody.style.padding = '18px 22px 22px';
-        reportBody.style.background = '#ffffff';
-      }
-      
-      // Style headings
-      const headings = innerDiv.querySelectorAll('h1, h2, h3, h4, h5, h6');
-      headings.forEach((h) => {
-        (h as HTMLElement).style.fontWeight = 'bold';
-        (h as HTMLElement).style.color = '#0f172a';
-        (h as HTMLElement).style.marginTop = '1em';
-        (h as HTMLElement).style.marginBottom = '0.5em';
-      });
-
-      const h2s = innerDiv.querySelectorAll('h2');
-      h2s.forEach((h) => {
+      innerDiv.querySelectorAll('h2').forEach((h) => {
         const el = h as HTMLElement;
-        el.style.color = '#4338ca';
-        el.style.borderBottom = '2px solid #e0e7ff';
+        el.style.fontSize = '12.5pt';
+        el.style.color = '#1d4ed8';
+        el.style.borderBottom = '1px solid #dbeafe';
         el.style.paddingBottom = '6px';
       });
 
-      const h3s = innerDiv.querySelectorAll('h3');
-      h3s.forEach((h) => {
-        (h as HTMLElement).style.color = '#0f766e';
+      innerDiv.querySelectorAll('h3').forEach((h) => {
+        const el = h as HTMLElement;
+        el.style.fontSize = '11.5pt';
+        el.style.color = '#0f766e';
       });
 
-      const h4s = innerDiv.querySelectorAll('h4');
-      h4s.forEach((h) => {
+      innerDiv.querySelectorAll('h4').forEach((h) => {
         const el = h as HTMLElement;
+        el.style.fontSize = '11pt';
         el.style.color = '#b45309';
         el.style.background = '#fff7ed';
         el.style.borderLeft = '4px solid #f59e0b';
         el.style.padding = '6px 10px';
-        el.style.borderRadius = '8px';
-      });
-      
-      // Style paragraphs
-      const paragraphs = innerDiv.querySelectorAll('p');
-      paragraphs.forEach((p) => {
-        (p as HTMLElement).style.marginBottom = '1em';
-        (p as HTMLElement).style.color = '#0f172a';
-      });
-      
-      // Style lists
-      const lists = innerDiv.querySelectorAll('ul, ol');
-      lists.forEach((list) => {
-        (list as HTMLElement).style.marginLeft = '1.5em';
-        (list as HTMLElement).style.marginBottom = '1em';
-        (list as HTMLElement).style.color = '#0f172a';
-      });
-      
-      // Style list items
-      const listItems = innerDiv.querySelectorAll('li');
-      listItems.forEach((li) => {
-        (li as HTMLElement).style.marginBottom = '0.5em';
-        (li as HTMLElement).style.color = '#0f172a';
-      });
-      
-      // Style strong/bold
-      const strongs = innerDiv.querySelectorAll('strong');
-      strongs.forEach((s) => {
-        (s as HTMLElement).style.fontWeight = 'bold';
-        (s as HTMLElement).style.color = '#0f172a';
-      });
-      
-      // Style code blocks
-      const codeBlocks = innerDiv.querySelectorAll('pre, code');
-      codeBlocks.forEach((code) => {
-        (code as HTMLElement).style.backgroundColor = '#f1f5f9';
-        (code as HTMLElement).style.padding = '0.2em 0.4em';
-        (code as HTMLElement).style.borderRadius = '3px';
-        (code as HTMLElement).style.fontFamily = 'monospace';
+        el.style.borderRadius = '6px';
       });
 
-      const hrs = innerDiv.querySelectorAll('hr');
-      hrs.forEach((hr) => {
+      innerDiv.querySelectorAll('p').forEach((p) => {
+        const el = p as HTMLElement;
+        el.style.marginBottom = '10px';
+        el.style.color = '#0f172a';
+      });
+
+      innerDiv.querySelectorAll('ul, ol').forEach((list) => {
+        const el = list as HTMLElement;
+        el.style.marginLeft = '18px';
+        el.style.marginBottom = '10px';
+      });
+
+      innerDiv.querySelectorAll('li').forEach((li) => {
+        const el = li as HTMLElement;
+        el.style.marginBottom = '6px';
+      });
+
+      innerDiv.querySelectorAll('strong').forEach((s) => {
+        const el = s as HTMLElement;
+        el.style.fontWeight = '700';
+        el.style.color = '#0f172a';
+      });
+
+      innerDiv.querySelectorAll('pre, code').forEach((code) => {
+        const el = code as HTMLElement;
+        el.style.backgroundColor = '#f1f5f9';
+        el.style.padding = '4px 6px';
+        el.style.borderRadius = '4px';
+        el.style.fontFamily = 'Menlo, Consolas, monospace';
+        el.style.fontSize = '10pt';
+      });
+
+      innerDiv.querySelectorAll('hr').forEach((hr) => {
         const el = hr as HTMLElement;
         el.style.border = '0';
-        el.style.height = '2px';
-        el.style.background = 'linear-gradient(90deg, #4f46e5, #2563eb, #10b981)';
-        el.style.margin = '18px 0';
+        el.style.height = '1px';
+        el.style.background = '#e2e8f0';
+        el.style.margin = '16px 0';
       });
-      
+
+      innerDiv.querySelectorAll('table').forEach((table) => {
+        const el = table as HTMLElement;
+        el.style.width = '100%';
+        el.style.borderCollapse = 'collapse';
+        el.style.margin = '12px 0';
+      });
+
+      innerDiv.querySelectorAll('th, td').forEach((cell) => {
+        const el = cell as HTMLElement;
+        el.style.border = '1px solid #e2e8f0';
+        el.style.padding = '6px 8px';
+        el.style.fontSize = '10.5pt';
+      });
+
+      innerDiv.querySelectorAll('th').forEach((cell) => {
+        const el = cell as HTMLElement;
+        el.style.backgroundColor = '#f1f5f9';
+        el.style.color = '#334155';
+        el.style.fontWeight = '600';
+      });
+
       tempDiv.appendChild(innerDiv);
       document.body.appendChild(tempDiv);
 
-      // Wait for styles to apply and layout to calculate
-      await new Promise(resolve => setTimeout(resolve, 300));
-
-      // Force a reflow to ensure layout is calculated
+      await new Promise(resolve => setTimeout(resolve, 200));
       void tempDiv.offsetHeight;
 
-      // Capture as canvas with better quality
-      // html2canvas can capture off-screen elements
       const canvas = await html2canvas(tempDiv, {
         scale: 2,
         useCORS: true,
@@ -1841,60 +1535,42 @@ export default function VaultDetail() {
         height: tempDiv.scrollHeight,
       });
 
-      // Clean up temporary element
       document.body.removeChild(tempDiv);
 
-      // Calculate PDF dimensions
-      const imgWidth = 210; // A4 width in mm
-      const pageHeight = 297; // A4 height in mm
-      const pageMargin = 10; // 10mm margin on all sides
-      const usablePageHeight = pageHeight - (2 * pageMargin); // Usable height per page
-      const usablePageWidth = imgWidth - (2 * pageMargin); // Usable width per page
-      
-      // Calculate image dimensions in PDF units
+      const imgWidth = 210;
+      const pageHeight = 297;
+      const pageMargin = 10;
+      const usablePageHeight = pageHeight - (2 * pageMargin);
+      const usablePageWidth = imgWidth - (2 * pageMargin);
       const imgHeight = (canvas.height * imgWidth) / canvas.width;
-      
-      // Create PDF
+
       const pdf = new jsPDF('p', 'mm', 'a4');
-      
-      // Split image across multiple pages properly
-      const imgDataUrl = canvas.toDataURL('image/png');
-      let sourceY = 0; // Source Y position in canvas pixels
+      let sourceY = 0;
       let remainingHeight = canvas.height;
-      
+
       while (remainingHeight > 0) {
-        // Calculate how much of the image fits on this page
         const sourceHeight = Math.min(
           remainingHeight,
           (usablePageHeight / imgHeight) * canvas.height
         );
-        
-        // Create a temporary canvas for this page's portion
+
         const pageCanvas = document.createElement('canvas');
         pageCanvas.width = canvas.width;
         pageCanvas.height = sourceHeight;
         const pageCtx = pageCanvas.getContext('2d');
-        
         if (!pageCtx) {
           throw new Error('Failed to create canvas context');
         }
-        
-        // Draw only the portion of the image for this page
+
         pageCtx.drawImage(
           canvas,
-          0, sourceY, canvas.width, sourceHeight, // Source rectangle
-          0, 0, canvas.width, sourceHeight // Destination rectangle
+          0, sourceY, canvas.width, sourceHeight,
+          0, 0, canvas.width, sourceHeight
         );
-        
-        // Add to PDF
+
         const pageImgDataUrl = pageCanvas.toDataURL('image/png');
-        // Calculate height maintaining aspect ratio
-        // The pageCanvas has width canvas.width and height sourceHeight
-        // We want to fit it to usablePageWidth width, so height = (sourceHeight / canvas.width) * usablePageWidth
-        // But we also need to account for the overall scale: imgHeight / canvas.height
-        // So: pageImgHeight = (sourceHeight / canvas.height) * imgHeight * (usablePageWidth / imgWidth)
         const pageImgHeight = (sourceHeight / canvas.height) * imgHeight * (usablePageWidth / imgWidth);
-        
+
         pdf.addImage(
           pageImgDataUrl,
           'PNG',
@@ -1903,26 +1579,17 @@ export default function VaultDetail() {
           usablePageWidth,
           pageImgHeight
         );
-        
-        // Move to next page if there's more content
+
         sourceY += sourceHeight;
         remainingHeight -= sourceHeight;
-        
         if (remainingHeight > 0) {
           pdf.addPage();
         }
       }
 
-      // Get PDF as blob
       const pdfBlob = pdf.output('blob');
-      
-      // Add watermark to PDF
-      const { addWatermarkToFile } = await import('@/utils/watermark');
-      const watermarkedBlob = await addWatermarkToFile(pdfBlob, 'audit_report.pdf');
-
-      // Download watermarked PDF
       const fileName = `audit_report_${vaultId}_${auditJob?.id || 'job'}.pdf`;
-      const url = URL.createObjectURL(watermarkedBlob);
+      const url = URL.createObjectURL(pdfBlob);
       const a = document.createElement('a');
       a.href = url;
       a.download = fileName;
@@ -1933,7 +1600,7 @@ export default function VaultDetail() {
 
       toast({
         title: 'PDF Generated',
-        description: 'The audit report has been downloaded as PDF with watermark.',
+        description: 'The audit report has been downloaded as PDF.',
       });
     } catch (error: any) {
       console.error('Error generating PDF:', error);
@@ -1945,6 +1612,125 @@ export default function VaultDetail() {
     }
   }, [auditJob, vaultId, toast]);
 
+  const stopCimProgressTimer = useCallback(() => {
+    if (cimProgressTimerRef.current) {
+      window.clearInterval(cimProgressTimerRef.current);
+      cimProgressTimerRef.current = null;
+    }
+  }, []);
+
+  const pollCimStatus = useCallback(async () => {
+    if (!vaultId) return;
+    try {
+      const res = await fetch(`${cimBackendUrl}/api/cim-status?vaultId=${encodeURIComponent(vaultId)}`);
+      if (!res.ok) return;
+      const status = await res.json();
+      if (cimRunId && status?.runId && status.runId !== cimRunId) {
+        return;
+      }
+      if (typeof status?.progress === 'number') {
+        setCimProgress(Math.min(100, Math.max(0, status.progress)));
+      }
+      if (typeof status?.etaSeconds === 'number') {
+        setCimEtaSeconds(status.etaSeconds);
+      } else {
+        setCimEtaSeconds(null);
+      }
+      if (status?.status === 'completed' || status?.status === 'failed') {
+        stopCimProgressTimer();
+      }
+    } catch {
+      // ignore polling failures
+    }
+  }, [vaultId, cimBackendUrl, stopCimProgressTimer, cimRunId]);
+
+  const downloadCimPdf = useCallback(async (report: CIMReport) => {
+    if (!cimPreviewRef.current) return;
+    const html2pdf = (await import('html2pdf.js')).default;
+    const element = cimPreviewRef.current;
+    const safeName = (report.vaultName || 'CIM').replace(/\s+/g, '_');
+    const options = {
+      margin: 10,
+      filename: `CIM_${safeName}_${new Date().toISOString().split('T')[0]}.pdf`,
+      image: { type: 'jpeg', quality: 0.98 },
+      html2canvas: { scale: 2, backgroundColor: '#ffffff' },
+      jsPDF: { orientation: 'portrait', unit: 'mm', format: 'a4' },
+    };
+
+    html2pdf().set(options).from(element).save();
+  }, []);
+
+  const startCimGeneration = useCallback(async () => {
+    if (!vaultId || !vault || !user) return;
+    setCimError(null);
+    setCimIsRunning(true);
+    const runId = `${Date.now()}`;
+    setCimRunId(runId);
+    setCimProgress(10);
+    setCimEtaSeconds(null);
+    cimStartedAtRef.current = Date.now();
+    stopCimProgressTimer();
+    cimProgressTimerRef.current = window.setInterval(pollCimStatus, 2000);
+    pollCimStatus();
+
+    try {
+      const report = await runCIMGeneration(vaultId, vault.name, user.id, runId);
+      setCimReport(report);
+      setCimProgress(100);
+      setCimEtaSeconds(null);
+      stopCimProgressTimer();
+      setTimeout(() => {
+        downloadCimPdf(report);
+      }, 300);
+    } catch (e: any) {
+      setCimError(e?.message || 'Failed to generate CIM');
+      stopCimProgressTimer();
+      setCimProgress(0);
+      setCimEtaSeconds(null);
+    } finally {
+      setCimIsRunning(false);
+    }
+  }, [vaultId, vault, user, stopCimProgressTimer, downloadCimPdf, pollCimStatus]);
+
+  const regenerateCim = useCallback(async () => {
+    setCimReport(null);
+    await startCimGeneration();
+  }, [startCimGeneration]);
+
+  useEffect(() => {
+    return () => {
+      stopCimProgressTimer();
+    };
+  }, [stopCimProgressTimer]);
+
+  useEffect(() => {
+    if (!isCimDialogOpen) return;
+    loadLatestCim();
+  }, [isCimDialogOpen, loadLatestCim]);
+
+  useEffect(() => {
+    loadAuditState();
+  }, [loadAuditState]);
+
+  useEffect(() => {
+    if (!auditJobId) return;
+    if (auditJob?.status === 'completed' || auditJob?.status === 'failed' || auditJob?.status === 'cancelled') return;
+    if (isRestartingRef.current) return;
+
+    const t = setInterval(() => {
+      if (!auditIsRunning && !isRestartingRef.current) {
+        runAuditBatch();
+      }
+    }, 4000);
+
+    return () => clearInterval(t);
+  }, [auditJobId, auditJob?.status, auditIsRunning, runAuditBatch]);
+
+  useEffect(() => {
+    if (!isAuditDialogOpen) return;
+    loadAuditState();
+  }, [isAuditDialogOpen, loadAuditState]);
+
   const formatFileSize = (bytes: number | null) => {
     if (!bytes) return 'Unknown';
     if (bytes < 1024) return `${bytes} B`;
@@ -1953,9 +1739,7 @@ export default function VaultDetail() {
     return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
   };
 
-  // Show loading spinner ONLY if we don't have vault data yet (first load)
-  // On refresh, if we have vault data, show it immediately even if folders/docs are still loading
-  if (loading && !vault) {
+  if (loading) {
     return (
       <DashboardLayout>
         <div className="animate-pulse space-y-6">
@@ -1966,7 +1750,7 @@ export default function VaultDetail() {
     );
   }
 
-  if (!vault && vaultId) {
+  if (!vault) {
     return (
       <DashboardLayout>
         <div className="text-center py-16">
@@ -2015,13 +1799,10 @@ export default function VaultDetail() {
                   <div className="flex items-center justify-between gap-3">
                     <div>
                       <DialogTitle className="font-display text-xl">Audit Documents</DialogTitle>
-                      <DialogDescription className="sr-only">
-                        Run forensic AI audit on documents in this dataroom
-                      </DialogDescription>
                     </div>
                     <Collapsible open={isAuditExpanded} onOpenChange={setIsAuditExpanded}>
                       <CollapsibleTrigger asChild>
-                        <Button variant="outline" size="sm">
+                        <Button variant="outline" size="sm" className="mr-6">
                           {isAuditExpanded ? 'Collapse' : 'Expand'}
                         </Button>
                       </CollapsibleTrigger>
@@ -2096,34 +1877,33 @@ export default function VaultDetail() {
                         </div>
                         <ScrollArea className="h-[40vh] p-3 max-w-full overflow-hidden">
                           {auditJob?.report_markdown ? (
-                            <div ref={reportContentRef} className="audit-report w-full max-w-full min-w-0 overflow-hidden">
-                              <div className="audit-report-page w-full max-w-full min-w-0 rounded-2xl overflow-hidden bg-white text-slate-900 border border-slate-200">
-                                <div className="audit-report-header bg-white text-slate-900 px-5 py-4 border-b border-slate-200">
-                                  <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between sm:gap-4">
+                            <div ref={reportContentRef} className="w-full max-w-full overflow-hidden">
+                              <div className="w-full max-w-full rounded-xl border border-slate-200 bg-white shadow-sm overflow-hidden">
+                                <div className="border-b border-slate-200 bg-slate-50 px-4 py-3">
+                                  <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                                     <div className="min-w-0">
-                                      <p className="audit-report-kicker text-[10px] uppercase tracking-[0.2em] text-slate-500">Forensic Audit Report</p>
-                                      <div className="audit-report-title text-lg sm:text-xl font-semibold text-slate-900 break-words">
-                                        {vault?.name ?? 'Dataroom'} · Audit Report
-                                      </div>
+                                      <p className="text-xs uppercase tracking-widest text-slate-500">Forensic Audit Report</p>
+                                      <p className="text-base font-semibold text-slate-900 truncate">
+                                        {vault?.name ?? 'Dataroom'} · Report Preview
+                                      </p>
                                     </div>
-                                    <div className="text-left sm:text-right text-xs text-slate-600">
-                                      <div>{reportMeta.dateLabel}</div>
-                                      <div className="text-slate-400">{reportMeta.timeLabel}</div>
+                                    <div className="text-xs text-slate-500">
+                                      Status: <span className="text-slate-800">{auditJob?.status || 'completed'}</span>
                                     </div>
                                   </div>
-                                  <div className="mt-3 flex flex-wrap gap-2 text-xs">
-                                    <span className="audit-report-chip inline-flex items-center rounded-full bg-slate-100 text-slate-700 px-2.5 py-1 border border-slate-200">
-                                      Report ID: {auditJob?.id || '—'}
+                                  <div className="mt-2 flex flex-wrap gap-2 text-xs text-slate-600">
+                                    <span className="rounded-full border border-slate-200 bg-white px-2.5 py-1">
+                                      Files: {auditJob?.processed_files ?? 0}/{auditJob?.total_files ?? 0}
                                     </span>
-                                    <span className="audit-report-chip inline-flex items-center rounded-full bg-emerald-50 text-emerald-700 px-2.5 py-1 border border-emerald-200">
-                                      Status: {auditJob?.status || 'completed'}
+                                    <span className="rounded-full border border-slate-200 bg-white px-2.5 py-1">
+                                      Progress: {Math.round(Number(auditJob?.progress ?? 0))}%
                                     </span>
                                   </div>
                                 </div>
-                                <div className="audit-report-body p-5 overflow-x-hidden">
-                                  <div className="prose prose-sm max-w-none w-full break-words [overflow-wrap:anywhere] prose-headings:font-display prose-h2:text-indigo-700 prose-h3:text-emerald-700 prose-h4:text-amber-700 prose-h4:bg-amber-50 prose-h4:border-l-4 prose-h4:border-amber-400 prose-h4:pl-3 prose-h4:py-1 prose-h4:rounded-md prose-p:text-slate-700 prose-strong:text-slate-900 prose-ul:text-slate-700 prose-ol:text-slate-700 prose-li:text-slate-700 prose-code:text-slate-700 prose-pre:bg-slate-50 prose-pre:text-slate-700 prose-pre:whitespace-pre-wrap prose-pre:overflow-x-auto prose-code:break-words [&_table]:block [&_table]:max-w-full [&_table]:overflow-x-auto [&_table]:border-collapse [&_img]:max-w-full [&_img]:h-auto">
+                                <div className="p-4">
+                                  <div className="prose prose-sm max-w-none break-words [overflow-wrap:anywhere] prose-headings:font-display prose-h1:text-lg prose-h2:text-base prose-h3:text-sm prose-h4:text-sm prose-h2:text-indigo-700 prose-h3:text-emerald-700 prose-h4:text-amber-700 prose-h4:bg-amber-50 prose-h4:border-l-4 prose-h4:border-amber-400 prose-h4:pl-3 prose-h4:py-1 prose-h4:rounded-md prose-p:text-slate-700 prose-strong:text-slate-900 prose-ul:text-slate-700 prose-ol:text-slate-700 prose-li:text-slate-700 prose-code:text-slate-700 prose-pre:bg-slate-50 prose-pre:text-slate-700 prose-pre:whitespace-pre-wrap prose-pre:overflow-x-auto prose-code:break-words prose-table:border prose-table:border-slate-200 prose-th:border prose-th:border-slate-200 prose-td:border prose-td:border-slate-200 prose-th:bg-slate-100 prose-th:text-slate-700 prose-th:font-semibold prose-thead:border-b prose-thead:border-slate-200">
                                     <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                                      {reportMarkdown}
+                                      {sanitizedReportMarkdown}
                                     </ReactMarkdown>
                                   </div>
                                 </div>
@@ -2140,6 +1920,100 @@ export default function VaultDetail() {
               </DialogContent>
             </Dialog>
 
+            <Dialog open={isCimDialogOpen} onOpenChange={setIsCimDialogOpen}>
+              <DialogTrigger asChild>
+                <Button variant="outline" size="sm" className="text-xs sm:text-sm">
+                  <FileText className="w-3 h-3 sm:w-4 sm:h-4 mr-1 sm:mr-2" />
+                  Generate CIM
+                </Button>
+              </DialogTrigger>
+              <DialogContent className="sm:max-w-[900px] max-h-[90vh] flex flex-col overflow-hidden">
+                <DialogHeader>
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <DialogTitle className="font-display text-xl">Generate CIM</DialogTitle>
+                    </div>
+                  </div>
+                </DialogHeader>
+
+                <div className="space-y-4 py-2 flex-1 min-h-0 min-w-0 overflow-hidden">
+                  <div className="rounded-lg border border-gold/10 p-3 bg-muted/10">
+                    <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+                      <div className="min-w-0">
+                        <p className="text-sm text-muted-foreground">
+                          Generates a Confidential Information Memorandum using all documents in this dataroom.
+                        </p>
+                        {cimError && (
+                          <p className="text-sm text-destructive mt-2">{cimError}</p>
+                        )}
+                      </div>
+                      <div className="flex items-center gap-2 flex-shrink-0">
+                        <Button
+                          variant="gold"
+                          size="sm"
+                          onClick={startCimGeneration}
+                          disabled={cimIsRunning}
+                        >
+                          {cimIsRunning ? 'Generating...' : 'Start'}
+                        </Button>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={regenerateCim}
+                          disabled={cimIsRunning}
+                        >
+                          Regenerate
+                        </Button>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => cimReport && downloadCimPdf(cimReport)}
+                          disabled={!cimReport}
+                        >
+                          Download CIM
+                        </Button>
+                      </div>
+                    </div>
+
+                    <div className="mt-4 space-y-2">
+                      <div className="flex items-center justify-between text-sm">
+                        <span className="text-muted-foreground">
+                          Status: <span className="text-foreground">{cimIsRunning ? 'running' : cimReport ? 'completed' : 'not started'}</span>
+                        </span>
+                        <span className="text-muted-foreground">
+                          ETA: <span className="text-foreground">{formatDuration(cimEtaSeconds)}</span>
+                        </span>
+                      </div>
+                      <Progress value={Number(cimProgress)} className="h-2" />
+                      <div className="flex items-center justify-between text-xs text-muted-foreground">
+                        <span>{cimIsRunning ? 'Generating CIM report' : '—'}</span>
+                        <span>{Math.round(Number(cimProgress))}%</span>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="rounded-lg border border-gold/10 overflow-hidden flex-1 min-h-0">
+                    <div className="px-3 py-2 border-b border-gold/10 bg-muted/5">
+                      <p className="text-sm font-medium text-foreground">CIM Preview</p>
+                      <p className="text-xs text-muted-foreground">Preview updates after generation.</p>
+                    </div>
+                    <ScrollArea className="h-[45vh] p-3 max-w-full overflow-hidden bg-white">
+                      {cimReport ? (
+                        <div
+                          ref={cimPreviewRef}
+                          id="cim-report-content"
+                          className="max-w-none text-slate-800"
+                          dangerouslySetInnerHTML={{ __html: cimHtml }}
+                        />
+                      ) : (
+                        <p className="text-sm text-muted-foreground">CIM not generated yet.</p>
+                      )}
+                    </ScrollArea>
+                  </div>
+                </div>
+              </DialogContent>
+            </Dialog>
+
             <Dialog open={isCreateFolderOpen} onOpenChange={setIsCreateFolderOpen}>
               <DialogTrigger asChild>
                 <Button variant="outline" size="sm" className="text-xs sm:text-sm">
@@ -2151,9 +2025,6 @@ export default function VaultDetail() {
               <DialogContent className="bg-card border-gold/20">
                 <DialogHeader>
                   <DialogTitle className="font-display text-xl">Create New Folder</DialogTitle>
-                  <DialogDescription className="sr-only">
-                    Create a new folder in this dataroom
-                  </DialogDescription>
                 </DialogHeader>
                 <div className="space-y-4 mt-4">
                   <Input
@@ -2498,9 +2369,6 @@ export default function VaultDetail() {
             <DialogTitle className="font-display text-xl">
               Rename {renamingItem?.type === 'folder' ? 'Folder' : 'File'}
             </DialogTitle>
-            <DialogDescription className="sr-only">
-              Enter a new name for this {renamingItem?.type === 'folder' ? 'folder' : 'file'}
-            </DialogDescription>
           </DialogHeader>
           <div className="space-y-4 mt-4">
             <Input
@@ -2533,5 +2401,45 @@ export default function VaultDetail() {
         </DialogContent>
       </Dialog>
     </DashboardLayout>
+  );
+}
+
+class VaultDetailErrorBoundary extends React.Component<
+  { children: React.ReactNode },
+  { error: Error | null }
+> {
+  constructor(props: { children: React.ReactNode }) {
+    super(props);
+    this.state = { error: null };
+  }
+
+  static getDerivedStateFromError(error: Error) {
+    return { error };
+  }
+
+  componentDidCatch(error: Error, info: React.ErrorInfo) {
+    console.error('VaultDetail crash:', error, info);
+  }
+
+  render() {
+    if (this.state.error) {
+      return (
+        <DashboardLayout>
+          <div className="rounded-lg border border-destructive/30 bg-destructive/10 p-4 text-sm text-destructive">
+            <p className="font-semibold">VaultDetail failed to render.</p>
+            <p className="mt-2 break-words">{this.state.error.message}</p>
+          </div>
+        </DashboardLayout>
+      );
+    }
+    return this.props.children;
+  }
+}
+
+export default function VaultDetail() {
+  return (
+    <VaultDetailErrorBoundary>
+      <VaultDetailInner />
+    </VaultDetailErrorBoundary>
   );
 }

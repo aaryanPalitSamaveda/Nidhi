@@ -21,7 +21,7 @@ import {
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import mammoth from 'mammoth';
 import { Document, Packer, Paragraph, TextRun, HeadingLevel } from 'docx';
-import * as XLSX from 'xlsx';
+import ExcelJS from 'exceljs';
 
 interface DocumentInfo {
   id: string;
@@ -64,13 +64,12 @@ export default function DocumentViewerModal({ documentId, open, onClose }: Docum
   const [canEdit, setCanEdit] = useState(false);
   const [autoSaveMessage, setAutoSaveMessage] = useState<string>('');
   const [showSaveSuccessDialog, setShowSaveSuccessDialog] = useState(false);
-  const [excelData, setExcelData] = useState<{ workbook: XLSX.WorkBook | null; currentSheet: string; sheetData: any[][] }>({
+  const [excelData, setExcelData] = useState<{ workbook: ExcelJS.Workbook | null; currentSheet: string; sheetData: string[][] }>({
     workbook: null,
     currentSheet: '',
     sheetData: [],
   });
   const [originalExcelData, setOriginalExcelData] = useState<any[][]>([]);
-  const [originalWorkbookState, setOriginalWorkbookState] = useState<XLSX.WorkBook | null>(null);
   
   const saveTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const editorRef = useRef<HTMLDivElement>(null);
@@ -139,7 +138,6 @@ export default function DocumentViewerModal({ documentId, open, onClose }: Docum
       setCanEdit(false);
       setExcelData({ workbook: null, currentSheet: '', sheetData: [] });
       setOriginalExcelData([]);
-      setOriginalWorkbookState(null);
       setAutoSaveMessage('');
       setShowSaveSuccessDialog(false);
     }
@@ -380,16 +378,12 @@ export default function DocumentViewerModal({ documentId, open, onClose }: Docum
         // For Excel files, use Office Online Viewer for full fidelity (charts, images, formatting, etc.)
         // For CSV, parse and display as editable table
         if (type === 'csv') {
-          // CSV - parse using XLSX for editing
           const text = await data.text();
-          const workbook = XLSX.read(text, { type: 'string', raw: false });
-          const sheetName = workbook.SheetNames[0] || '';
-          const worksheet = workbook.Sheets[sheetName];
-          const jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1, defval: '', raw: false });
-          let sheetData = jsonData as any[][];
-          if (sheetData.length === 0) {
-            sheetData = [['']];
-          }
+          const sheetData = parseCsvText(text);
+          const workbook = new ExcelJS.Workbook();
+          const sheetName = 'Sheet1';
+          const worksheet = workbook.addWorksheet(sheetName);
+          worksheet.addRows(sheetData);
           
           setExcelData({
             workbook,
@@ -397,7 +391,6 @@ export default function DocumentViewerModal({ documentId, open, onClose }: Docum
             sheetData: sheetData,
           });
           setOriginalExcelData(JSON.parse(JSON.stringify(sheetData)));
-          setOriginalWorkbookState(JSON.parse(JSON.stringify(workbook)));
         } else {
           // Excel - get signed URL for Office Online Viewer (longer expiry for reliability)
           const { data: signedUrlData, error: signedUrlError } = await supabase.storage
@@ -418,13 +411,14 @@ export default function DocumentViewerModal({ documentId, open, onClose }: Docum
             // Also parse for potential future editing capability
             try {
               const arrayBuffer = await data.arrayBuffer();
-              const workbook = XLSX.read(arrayBuffer, { type: 'array' });
-              const sheetName = workbook.SheetNames[0] || '';
-              const worksheet = workbook.Sheets[sheetName];
-              const jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1, defval: '', raw: false });
-              let sheetData = jsonData as any[][];
-              if (sheetData.length === 0) {
-                sheetData = [['']];
+              const workbook = new ExcelJS.Workbook();
+              await workbook.xlsx.load(arrayBuffer);
+              const worksheet = workbook.worksheets[0];
+              const sheetName = worksheet?.name || 'Sheet1';
+              const sheetData = worksheet ? worksheetToSheetData(worksheet) : [['']];
+              
+              if (!worksheet) {
+                workbook.addWorksheet(sheetName).addRows(sheetData);
               }
               
               setExcelData({
@@ -433,7 +427,6 @@ export default function DocumentViewerModal({ documentId, open, onClose }: Docum
                 sheetData: sheetData,
               });
               setOriginalExcelData(JSON.parse(JSON.stringify(sheetData)));
-              setOriginalWorkbookState(JSON.parse(JSON.stringify(workbook)));
             } catch (error) {
               console.warn('Could not parse Excel for editing:', error);
               // Viewer will still work even if parsing fails
@@ -553,13 +546,93 @@ export default function DocumentViewerModal({ documentId, open, onClose }: Docum
     }
   };
 
-  const convertExcelDataToBlob = (workbook: XLSX.WorkBook, fileName: string): Blob => {
+  const parseCsvText = (text: string): string[][] => {
+    const rows: string[][] = [];
+    let row: string[] = [];
+    let current = '';
+    let inQuotes = false;
+
+    for (let i = 0; i < text.length; i += 1) {
+      const char = text[i];
+      const next = text[i + 1];
+
+      if (inQuotes) {
+        if (char === '"' && next === '"') {
+          current += '"';
+          i += 1;
+        } else if (char === '"') {
+          inQuotes = false;
+        } else {
+          current += char;
+        }
+      } else {
+        if (char === '"') {
+          inQuotes = true;
+        } else if (char === ',') {
+          row.push(current);
+          current = '';
+        } else if (char === '\n') {
+          row.push(current);
+          rows.push(row);
+          row = [];
+          current = '';
+        } else if (char !== '\r') {
+          current += char;
+        }
+      }
+    }
+
+    row.push(current);
+    rows.push(row);
+
+    if (rows.length > 1 && rows[rows.length - 1].every((cell) => cell === '') && text.endsWith('\n')) {
+      rows.pop();
+    }
+
+    return rows.length ? rows : [['']];
+  };
+
+  const worksheetToSheetData = (worksheet: ExcelJS.Worksheet): string[][] => {
+    const sheetData: string[][] = [];
+    const maxColumns = Math.max(worksheet.actualColumnCount || 1, 1);
+
+    worksheet.eachRow({ includeEmpty: true }, (row) => {
+      const rowData: string[] = [];
+      for (let col = 1; col <= maxColumns; col += 1) {
+        const cell = row.getCell(col);
+        rowData.push(cell?.text ?? String(cell?.value ?? ''));
+      }
+      sheetData.push(rowData);
+    });
+
+    if (sheetData.length === 0) {
+      sheetData.push(Array(maxColumns).fill(''));
+    }
+
+    return sheetData;
+  };
+
+  const applySheetDataToWorkbook = (workbook: ExcelJS.Workbook, sheetName: string, sheetData: string[][]) => {
+    const targetName = sheetName || workbook.worksheets[0]?.name || 'Sheet1';
+    let worksheet = workbook.getWorksheet(targetName);
+
+    if (!worksheet) {
+      worksheet = workbook.addWorksheet(targetName);
+    }
+
+    worksheet.spliceRows(1, worksheet.rowCount);
+    const rowsToAdd = sheetData.length ? sheetData : [['']];
+    worksheet.addRows(rowsToAdd);
+  };
+
+  const convertExcelDataToBlob = async (workbook: ExcelJS.Workbook, fileName: string): Promise<Blob> => {
     // Determine output type based on file extension
     const ext = fileName.split('.').pop()?.toLowerCase();
-    const outputType = ext === 'csv' ? 'csv' : 'xlsx';
-    
-    const blob = XLSX.write(workbook, { type: 'array', bookType: outputType });
-    return new Blob([blob], { 
+    const buffer = ext === 'csv'
+      ? await workbook.csv.writeBuffer()
+      : await workbook.xlsx.writeBuffer();
+
+    return new Blob([buffer], { 
       type: ext === 'csv' ? 'text/csv' : 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' 
     });
   };
@@ -590,10 +663,8 @@ export default function DocumentViewerModal({ documentId, open, onClose }: Docum
           throw new Error('Workbook data not available');
         }
         // Ensure current sheet is saved to workbook before saving
-        const workbookToSave = { ...excelData.workbook };
-        const worksheet = XLSX.utils.aoa_to_sheet(excelData.sheetData);
-        workbookToSave.Sheets[excelData.currentSheet] = worksheet;
-        fileBlob = convertExcelDataToBlob(workbookToSave, document.name);
+        applySheetDataToWorkbook(excelData.workbook, excelData.currentSheet, excelData.sheetData);
+        fileBlob = await convertExcelDataToBlob(excelData.workbook, document.name);
         contentType = 'text/csv';
       } else if (fileType === 'excel') {
         // For Excel files viewed in Office Online Viewer, download original
@@ -722,14 +793,8 @@ export default function DocumentViewerModal({ documentId, open, onClose }: Docum
       if (fileType === 'docx' || fileType === 'doc') {
         setOriginalHtmlContent(htmlContent);
       } else if (fileType === 'csv') {
-        // Save current sheet to workbook before updating original state
-        if (excelData.workbook && excelData.currentSheet) {
-          const worksheet = XLSX.utils.aoa_to_sheet(excelData.sheetData);
-          excelData.workbook.Sheets[excelData.currentSheet] = worksheet;
-          
-          // Update original workbook state to match current state
-          const updatedWorkbook = JSON.parse(JSON.stringify(excelData.workbook));
-          setOriginalWorkbookState(updatedWorkbook);
+        if (excelData.workbook) {
+          applySheetDataToWorkbook(excelData.workbook, excelData.currentSheet, excelData.sheetData);
         }
         setOriginalExcelData(JSON.parse(JSON.stringify(excelData.sheetData)));
       }
@@ -927,14 +992,14 @@ export default function DocumentViewerModal({ documentId, open, onClose }: Docum
       } catch (watermarkError) {
         console.error('Watermarking failed, downloading original file:', watermarkError);
         // If watermarking fails, download original file
-      const url = URL.createObjectURL(data);
-      const a = window.document.createElement('a');
-      a.href = url;
-      a.download = document.name;
-      window.document.body.appendChild(a);
-      a.click();
-      window.document.body.removeChild(a);
-      URL.revokeObjectURL(url);
+        const url = URL.createObjectURL(data);
+        const a = window.document.createElement('a');
+        a.href = url;
+        a.download = document.name;
+        window.document.body.appendChild(a);
+        a.click();
+        window.document.body.removeChild(a);
+        URL.revokeObjectURL(url);
       }
 
       await logActivity(document.vault_id, document.id, 'download', 'document', document.name);
@@ -1205,17 +1270,9 @@ export default function DocumentViewerModal({ documentId, open, onClose }: Docum
                                       }
                                     });
                                   
-                                    // Update current sheet data in workbook
-                                    const updatedWorkbook = excelData.workbook ? { ...excelData.workbook } : null;
-                                    if (updatedWorkbook) {
-                                      const worksheet = XLSX.utils.aoa_to_sheet(newData);
-                                      updatedWorkbook.Sheets[excelData.currentSheet] = worksheet;
-                                    }
-                                  
                                     setExcelData(prev => ({ 
                                       ...prev, 
                                       sheetData: newData,
-                                      workbook: updatedWorkbook || prev.workbook
                                     }));
                                     const hasChanges = JSON.stringify(newData) !== JSON.stringify(originalExcelData);
                                     setHasUnsavedChanges(hasChanges);
@@ -1260,17 +1317,9 @@ export default function DocumentViewerModal({ documentId, open, onClose }: Docum
                                       }
                                     });
                                     
-                                    // Update workbook
-                                    const updatedWorkbook = excelData.workbook ? { ...excelData.workbook } : null;
-                                    if (updatedWorkbook) {
-                                      const worksheet = XLSX.utils.aoa_to_sheet(newData);
-                                      updatedWorkbook.Sheets[excelData.currentSheet] = worksheet;
-                                    }
-                                    
                                     setExcelData(prev => ({ 
                                       ...prev, 
                                       sheetData: newData,
-                                      workbook: updatedWorkbook || prev.workbook
                                     }));
                                     setHasUnsavedChanges(JSON.stringify(newData) !== JSON.stringify(originalExcelData));
                                   }}
