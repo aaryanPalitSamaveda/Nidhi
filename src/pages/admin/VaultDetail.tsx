@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, useRef } from 'react';
+import { useEffect, useState, useCallback, useRef, useMemo } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
 import { DashboardLayout } from '@/components/layout/DashboardLayout';
 import { supabase } from '@/integrations/supabase/client';
@@ -7,6 +7,7 @@ import { Input } from '@/components/ui/input';
 import {
   Dialog,
   DialogContent,
+  DialogDescription,
   DialogHeader,
   DialogTitle,
   DialogTrigger,
@@ -150,7 +151,7 @@ export default function VaultDetail() {
     const isRefresh = !!vault;
     if (!isRefresh) {
       setLoading(true);
-    }
+      }
 
     try {
       // Step 1: Fetch vault name FIRST (fastest, needed for header)
@@ -245,7 +246,7 @@ export default function VaultDetail() {
         const docsForEnrichment = docsData.slice(0, MAX_ENRICH_DOCS);
         const updatedByIds = [...new Set(docsForEnrichment.map((d: any) => d.updated_by).filter(Boolean))] as string[];
         const docIds = docsForEnrichment.map((d: any) => d.id);
-
+        
         setTimeout(async () => {
           try {
         let profilesMap = new Map();
@@ -1173,6 +1174,28 @@ export default function VaultDetail() {
     return `${ss}s`;
   }, []);
 
+  const reportMeta = useMemo(() => {
+    const rawDate = auditJob?.completed_at || auditJob?.updated_at || auditJob?.created_at;
+    const date = rawDate ? new Date(rawDate) : new Date();
+    const safeDate = Number.isNaN(date.getTime()) ? new Date() : date;
+    return {
+      dateLabel: safeDate.toLocaleDateString('en-IN', {
+        day: '2-digit',
+        month: 'short',
+        year: 'numeric',
+      }),
+      timeLabel: safeDate.toLocaleTimeString('en-IN', {
+        hour: '2-digit',
+        minute: '2-digit',
+      }),
+    };
+  }, [auditJob?.completed_at, auditJob?.created_at, auditJob?.updated_at]);
+
+  const reportMarkdown = useMemo(() => {
+    const md = auditJob?.report_markdown || '';
+    return md.replace(/^##\s+Forensic AI Audit Report\s*\n+/i, '');
+  }, [auditJob?.report_markdown]);
+
   const startAudit = useCallback(async () => {
     if (!vaultId) return;
     setAuditError(null);
@@ -1651,36 +1674,111 @@ export default function VaultDetail() {
       tempDiv.style.left = '-9999px';
       tempDiv.style.top = '0';
       tempDiv.style.width = '210mm'; // A4 width
-      tempDiv.style.padding = '20mm';
-      tempDiv.style.backgroundColor = '#ffffff';
-      tempDiv.style.fontFamily = 'Arial, Helvetica, sans-serif';
+      tempDiv.style.padding = '12mm';
+      tempDiv.style.backgroundColor = '#f8fafc';
+      tempDiv.style.fontFamily = 'Inter, Arial, Helvetica, sans-serif';
       tempDiv.style.fontSize = '12pt';
       tempDiv.style.lineHeight = '1.6';
-      tempDiv.style.color = '#000000';
+      tempDiv.style.color = '#0f172a';
       tempDiv.style.overflow = 'auto';
       
-      // Create inner container with prose styles applied inline
+      // Create inner container with report styles applied inline
       const innerDiv = document.createElement('div');
       innerDiv.innerHTML = renderedHTML;
       
-      // Apply prose-like styles inline to ensure they're captured
+      // Apply report layout styles inline to ensure they're captured
       innerDiv.style.maxWidth = '100%';
-      innerDiv.style.color = '#000000';
+      innerDiv.style.color = '#0f172a';
+
+      const reportPage = innerDiv.querySelector('.audit-report-page') as HTMLElement | null;
+      if (reportPage) {
+        reportPage.style.background = '#ffffff';
+        reportPage.style.border = '1px solid #e2e8f0';
+        reportPage.style.borderRadius = '16px';
+        reportPage.style.boxShadow = '0 12px 24px rgba(15, 23, 42, 0.08)';
+        reportPage.style.overflow = 'hidden';
+      }
+
+      const reportHeader = innerDiv.querySelector('.audit-report-header') as HTMLElement | null;
+      if (reportHeader) {
+        reportHeader.style.background = '#ffffff';
+        reportHeader.style.color = '#0f172a';
+        reportHeader.style.padding = '18px 22px';
+        reportHeader.style.borderBottom = '1px solid #e2e8f0';
+      }
+
+      const reportTitle = innerDiv.querySelector('.audit-report-title') as HTMLElement | null;
+      if (reportTitle) {
+        reportTitle.style.fontSize = '18pt';
+        reportTitle.style.fontWeight = '700';
+        reportTitle.style.margin = '6px 0 2px 0';
+      }
+
+      const reportKicker = innerDiv.querySelector('.audit-report-kicker') as HTMLElement | null;
+      if (reportKicker) {
+        reportKicker.style.fontSize = '9pt';
+        reportKicker.style.letterSpacing = '0.2em';
+        reportKicker.style.textTransform = 'uppercase';
+        reportKicker.style.color = '#64748b';
+      }
+
+      const reportMeta = innerDiv.querySelectorAll('.audit-report-chip');
+      reportMeta.forEach((chip) => {
+        const el = chip as HTMLElement;
+        el.style.display = 'inline-block';
+        el.style.padding = '4px 10px';
+        el.style.marginRight = '6px';
+        el.style.marginTop = '6px';
+        el.style.borderRadius = '999px';
+        el.style.fontSize = '9pt';
+        el.style.background = '#f1f5f9';
+        el.style.border = '1px solid #e2e8f0';
+        el.style.color = '#0f172a';
+      });
+
+      const reportBody = innerDiv.querySelector('.audit-report-body') as HTMLElement | null;
+      if (reportBody) {
+        reportBody.style.padding = '18px 22px 22px';
+        reportBody.style.background = '#ffffff';
+      }
       
       // Style headings
       const headings = innerDiv.querySelectorAll('h1, h2, h3, h4, h5, h6');
       headings.forEach((h) => {
         (h as HTMLElement).style.fontWeight = 'bold';
-        (h as HTMLElement).style.color = '#000000';
+        (h as HTMLElement).style.color = '#0f172a';
         (h as HTMLElement).style.marginTop = '1em';
         (h as HTMLElement).style.marginBottom = '0.5em';
+      });
+
+      const h2s = innerDiv.querySelectorAll('h2');
+      h2s.forEach((h) => {
+        const el = h as HTMLElement;
+        el.style.color = '#4338ca';
+        el.style.borderBottom = '2px solid #e0e7ff';
+        el.style.paddingBottom = '6px';
+      });
+
+      const h3s = innerDiv.querySelectorAll('h3');
+      h3s.forEach((h) => {
+        (h as HTMLElement).style.color = '#0f766e';
+      });
+
+      const h4s = innerDiv.querySelectorAll('h4');
+      h4s.forEach((h) => {
+        const el = h as HTMLElement;
+        el.style.color = '#b45309';
+        el.style.background = '#fff7ed';
+        el.style.borderLeft = '4px solid #f59e0b';
+        el.style.padding = '6px 10px';
+        el.style.borderRadius = '8px';
       });
       
       // Style paragraphs
       const paragraphs = innerDiv.querySelectorAll('p');
       paragraphs.forEach((p) => {
         (p as HTMLElement).style.marginBottom = '1em';
-        (p as HTMLElement).style.color = '#000000';
+        (p as HTMLElement).style.color = '#0f172a';
       });
       
       // Style lists
@@ -1688,30 +1786,39 @@ export default function VaultDetail() {
       lists.forEach((list) => {
         (list as HTMLElement).style.marginLeft = '1.5em';
         (list as HTMLElement).style.marginBottom = '1em';
-        (list as HTMLElement).style.color = '#000000';
+        (list as HTMLElement).style.color = '#0f172a';
       });
       
       // Style list items
       const listItems = innerDiv.querySelectorAll('li');
       listItems.forEach((li) => {
         (li as HTMLElement).style.marginBottom = '0.5em';
-        (li as HTMLElement).style.color = '#000000';
+        (li as HTMLElement).style.color = '#0f172a';
       });
       
       // Style strong/bold
       const strongs = innerDiv.querySelectorAll('strong');
       strongs.forEach((s) => {
         (s as HTMLElement).style.fontWeight = 'bold';
-        (s as HTMLElement).style.color = '#000000';
+        (s as HTMLElement).style.color = '#0f172a';
       });
       
       // Style code blocks
       const codeBlocks = innerDiv.querySelectorAll('pre, code');
       codeBlocks.forEach((code) => {
-        (code as HTMLElement).style.backgroundColor = '#f5f5f5';
+        (code as HTMLElement).style.backgroundColor = '#f1f5f9';
         (code as HTMLElement).style.padding = '0.2em 0.4em';
         (code as HTMLElement).style.borderRadius = '3px';
         (code as HTMLElement).style.fontFamily = 'monospace';
+      });
+
+      const hrs = innerDiv.querySelectorAll('hr');
+      hrs.forEach((hr) => {
+        const el = hr as HTMLElement;
+        el.style.border = '0';
+        el.style.height = '2px';
+        el.style.background = 'linear-gradient(90deg, #4f46e5, #2563eb, #10b981)';
+        el.style.margin = '18px 0';
       });
       
       tempDiv.appendChild(innerDiv);
@@ -1903,10 +2010,15 @@ export default function VaultDetail() {
                   Audit Documents
                 </Button>
               </DialogTrigger>
-              <DialogContent className="sm:max-w-[800px] max-h-[90vh] flex flex-col">
+              <DialogContent className="sm:max-w-[800px] max-h-[90vh] flex flex-col overflow-hidden">
                 <DialogHeader>
                   <div className="flex items-center justify-between gap-3">
-                    <DialogTitle className="font-display text-xl">Audit Documents</DialogTitle>
+                    <div>
+                      <DialogTitle className="font-display text-xl">Audit Documents</DialogTitle>
+                      <DialogDescription className="sr-only">
+                        Run forensic AI audit on documents in this dataroom
+                      </DialogDescription>
+                    </div>
                     <Collapsible open={isAuditExpanded} onOpenChange={setIsAuditExpanded}>
                       <CollapsibleTrigger asChild>
                         <Button variant="outline" size="sm">
@@ -1917,7 +2029,7 @@ export default function VaultDetail() {
                   </div>
                 </DialogHeader>
 
-                <div className="space-y-4 py-2 flex-1 min-h-0">
+                <div className="space-y-4 py-2 flex-1 min-h-0 min-w-0 overflow-hidden">
                   <div className="rounded-lg border border-gold/10 p-3 bg-muted/10">
                     <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
                       <div className="min-w-0">
@@ -1976,21 +2088,46 @@ export default function VaultDetail() {
                   </div>
 
                   <Collapsible open={isAuditExpanded} onOpenChange={setIsAuditExpanded}>
-                    <CollapsibleContent>
+                    <CollapsibleContent className="min-h-0 min-w-0">
                       <div className="rounded-lg border border-gold/10 overflow-hidden flex-1 min-h-0">
                         <div className="px-3 py-2 border-b border-gold/10 bg-muted/5">
                           <p className="text-sm font-medium text-foreground">Report Preview</p>
                           <p className="text-xs text-muted-foreground">Available after completion. Download for sharing.</p>
                         </div>
-                        <ScrollArea className="h-[40vh] p-3">
+                        <ScrollArea className="h-[40vh] p-3 max-w-full overflow-hidden">
                           {auditJob?.report_markdown ? (
-                            <div 
-                              ref={reportContentRef}
-                              className="prose prose-sm max-w-none dark:prose-invert prose-headings:font-display prose-headings:text-foreground prose-p:text-foreground/90 prose-strong:text-foreground prose-ul:text-foreground/90 prose-ol:text-foreground/90 prose-li:text-foreground/90 prose-code:text-foreground prose-pre:bg-muted prose-pre:text-foreground"
-                            >
-                              <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                                {auditJob.report_markdown}
-                              </ReactMarkdown>
+                            <div ref={reportContentRef} className="audit-report w-full max-w-full min-w-0 overflow-hidden">
+                              <div className="audit-report-page w-full max-w-full min-w-0 rounded-2xl overflow-hidden bg-white text-slate-900 border border-slate-200">
+                                <div className="audit-report-header bg-white text-slate-900 px-5 py-4 border-b border-slate-200">
+                                  <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between sm:gap-4">
+                                    <div className="min-w-0">
+                                      <p className="audit-report-kicker text-[10px] uppercase tracking-[0.2em] text-slate-500">Forensic Audit Report</p>
+                                      <div className="audit-report-title text-lg sm:text-xl font-semibold text-slate-900 break-words">
+                                        {vault?.name ?? 'Dataroom'} · Audit Report
+                                      </div>
+                                    </div>
+                                    <div className="text-left sm:text-right text-xs text-slate-600">
+                                      <div>{reportMeta.dateLabel}</div>
+                                      <div className="text-slate-400">{reportMeta.timeLabel}</div>
+                                    </div>
+                                  </div>
+                                  <div className="mt-3 flex flex-wrap gap-2 text-xs">
+                                    <span className="audit-report-chip inline-flex items-center rounded-full bg-slate-100 text-slate-700 px-2.5 py-1 border border-slate-200">
+                                      Report ID: {auditJob?.id || '—'}
+                                    </span>
+                                    <span className="audit-report-chip inline-flex items-center rounded-full bg-emerald-50 text-emerald-700 px-2.5 py-1 border border-emerald-200">
+                                      Status: {auditJob?.status || 'completed'}
+                                    </span>
+                                  </div>
+                                </div>
+                                <div className="audit-report-body p-5 overflow-x-hidden">
+                                  <div className="prose prose-sm max-w-none w-full break-words [overflow-wrap:anywhere] prose-headings:font-display prose-h2:text-indigo-700 prose-h3:text-emerald-700 prose-h4:text-amber-700 prose-h4:bg-amber-50 prose-h4:border-l-4 prose-h4:border-amber-400 prose-h4:pl-3 prose-h4:py-1 prose-h4:rounded-md prose-p:text-slate-700 prose-strong:text-slate-900 prose-ul:text-slate-700 prose-ol:text-slate-700 prose-li:text-slate-700 prose-code:text-slate-700 prose-pre:bg-slate-50 prose-pre:text-slate-700 prose-pre:whitespace-pre-wrap prose-pre:overflow-x-auto prose-code:break-words [&_table]:block [&_table]:max-w-full [&_table]:overflow-x-auto [&_table]:border-collapse [&_img]:max-w-full [&_img]:h-auto">
+                                    <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                                      {reportMarkdown}
+                                    </ReactMarkdown>
+                                  </div>
+                                </div>
+                              </div>
                             </div>
                           ) : (
                             <p className="text-sm text-muted-foreground">Report not generated yet.</p>
@@ -2014,6 +2151,9 @@ export default function VaultDetail() {
               <DialogContent className="bg-card border-gold/20">
                 <DialogHeader>
                   <DialogTitle className="font-display text-xl">Create New Folder</DialogTitle>
+                  <DialogDescription className="sr-only">
+                    Create a new folder in this dataroom
+                  </DialogDescription>
                 </DialogHeader>
                 <div className="space-y-4 mt-4">
                   <Input
@@ -2358,6 +2498,9 @@ export default function VaultDetail() {
             <DialogTitle className="font-display text-xl">
               Rename {renamingItem?.type === 'folder' ? 'Folder' : 'File'}
             </DialogTitle>
+            <DialogDescription className="sr-only">
+              Enter a new name for this {renamingItem?.type === 'folder' ? 'folder' : 'file'}
+            </DialogDescription>
           </DialogHeader>
           <div className="space-y-4 mt-4">
             <Input

@@ -927,14 +927,14 @@ export default function DocumentViewerModal({ documentId, open, onClose }: Docum
       } catch (watermarkError) {
         console.error('Watermarking failed, downloading original file:', watermarkError);
         // If watermarking fails, download original file
-        const url = URL.createObjectURL(data);
-        const a = window.document.createElement('a');
-        a.href = url;
-        a.download = document.name;
-        window.document.body.appendChild(a);
-        a.click();
-        window.document.body.removeChild(a);
-        URL.revokeObjectURL(url);
+      const url = URL.createObjectURL(data);
+      const a = window.document.createElement('a');
+      a.href = url;
+      a.download = document.name;
+      window.document.body.appendChild(a);
+      a.click();
+      window.document.body.removeChild(a);
+      URL.revokeObjectURL(url);
       }
 
       await logActivity(document.vault_id, document.id, 'download', 'document', document.name);
