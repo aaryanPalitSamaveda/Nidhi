@@ -11,6 +11,7 @@
 // - OPENAI_BASE_URL (default https://api.openai.com)
 // - OPENAI_MODEL_TEXT (default gpt-4o-mini)
 // - OPENAI_MODEL_VISION (default gpt-4o-mini)
+// - FRAUD_BACKEND_URL (for forensic analysis merge, e.g. https://your-backend.com)
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.49.1";
 import { encodeBase64 } from "https://deno.land/std@0.224.0/encoding/base64.ts";
@@ -155,6 +156,72 @@ function clampText(text: string, maxChars: number): string {
   if (!text) return "";
   if (text.length <= maxChars) return text;
   return text.slice(0, maxChars) + "\n\n[TRUNCATED]";
+}
+
+function sanitizeForensicText(text: string): string {
+  return (text || "")
+    .replace(/FRAUD_RISK_SCORE/gi, "FORENSIC_RISK_SCORE")
+    .replace(/fraud/gi, "forensic")
+    .replace(/^[=]{5,}\s*$/gm, "")
+    .replace(/non-hallucination policy.*$/gmi, "")
+    // Remove emojis/unicode symbols for a clean, professional report
+    .replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/gu, "")
+    // Remove bold wrappers around all-caps headings (keeps normal text bold)
+    .replace(/^\*\*\s*([A-Z0-9][A-Z0-9\s:#\-]{6,})\s*\*\*$/gm, "$1")
+    .replace(/^\*\*\s*(RED FLAG[^*]+)\s*\*\*$/gmi, "$1");
+}
+
+function formatForensicAnalysisMarkdown(args: {
+  vaultName: string;
+  analysis: string;
+  riskScore?: number;
+  filesAnalyzed?: number;
+}): string {
+  const { vaultName, analysis, riskScore, filesAnalyzed } = args;
+  const safeAnalysis = sanitizeForensicText(analysis);
+  const scoreLine = typeof riskScore === "number" ? `${riskScore}/100` : "N/A";
+  const fileLine = typeof filesAnalyzed === "number" ? String(filesAnalyzed) : "N/A";
+
+  return [
+    "## Forensic Audit Report",
+    "",
+    `**Dataroom:** ${vaultName}`,
+    `**Files Analyzed:** ${fileLine}`,
+    "",
+    "### Forensic Risk Assessment",
+    "",
+    `**Forensic Risk Score:** ${scoreLine}`,
+    "",
+    "### Detailed Forensic Analysis",
+    "",
+    safeAnalysis.trim() || "No forensic analysis returned.",
+  ].join("\n");
+}
+
+async function runForensicBackendAnalysis(args: {
+  url: string;
+  extractedData: Array<{ fileName: string; fileType: string; extracted: string }>;
+}): Promise<{ analysis?: string; riskScore?: number; filesAnalyzed?: number } | null> {
+  const { url, extractedData } = args;
+  if (!url || extractedData.length === 0) return null;
+
+  const res = await fetch(`${url.replace(/\/$/, "")}/api/forensic-audit`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ extractedData }),
+  });
+
+  if (!res.ok) {
+    const txt = await res.text().catch(() => "");
+    throw new Error(`Forensic backend error: ${res.status} ${res.statusText} ${txt}`.slice(0, 600));
+  }
+
+  const json = await res.json();
+  return {
+    analysis: typeof json?.analysis === "string" ? json.analysis : "",
+    riskScore: typeof json?.riskScore === "number" ? json.riskScore : undefined,
+    filesAnalyzed: typeof json?.filesAnalyzed === "number" ? json.filesAnalyzed : undefined,
+  };
 }
 
 function normalizeQuote(q: string): string {
@@ -658,8 +725,6 @@ function reportMarkdownFromJson(report: any): string {
   const coverageNotes = Array.isArray(report?.coverage_notes) ? report.coverage_notes : [];
   coverageNotes.forEach((n: any) => lines.push(`- ${n}`));
   lines.push("");
-  lines.push("---");
-  lines.push("**Non-hallucination policy**: Findings above are generated only from provided evidence snippets and extracted facts. If evidence was insufficient, items are marked accordingly.");
   return lines.join("\n");
 }
 
@@ -1269,25 +1334,108 @@ try {
               facts_json: r.facts_json,
             }));
 
-            const reportJson = await openaiChatJson({
-              apiKey: openaiKey,
-              baseUrl: openaiBaseUrl,
-              model: openaiModelText,
-              system: forensicSystemPrompt(),
-              user: finalSynthesisPrompt({ vaultId: job.vault_id, vaultName, jobId, fileFacts: payload }),
-              temperature: 0,
-              maxTokens: 1800,
-            });
+            let forensicAnalysis: { analysis?: string; riskScore?: number; filesAnalyzed?: number } | null = null;
+            const forensicBackendUrl = Deno.env.get("FRAUD_BACKEND_URL") || "";
+            if (forensicBackendUrl) {
+              await supabaseAdmin
+                .from("audit_jobs")
+                .update({ current_step: "Running forensic analysis" })
+                .eq("id", jobId);
 
-            const reportMd = reportMarkdownFromJson(reportJson);
+              const { data: evidenceRows, error: evidenceErr } = await supabaseAdmin
+                .from("audit_job_files")
+                .select("file_name, file_type, evidence_json")
+                .eq("job_id", jobId);
+              if (evidenceErr) throw evidenceErr;
+
+              const extractedData = (evidenceRows ?? [])
+                .map((row: any) => {
+                  const evidence = asObjectJson(row?.evidence_json);
+                  const snippets = Array.isArray(evidence?.snippets) ? evidence.snippets : [];
+                  const extracted = clampText(
+                    snippets.map((s: any) => String(s?.text ?? "")).join("\n\n"),
+                    4000,
+                  );
+                  return {
+                    fileName: String(row?.file_name ?? ""),
+                    fileType: String(row?.file_type ?? ""),
+                    extracted,
+                  };
+                })
+                .filter((d: any) => d.fileName && d.extracted);
+
+              try {
+                forensicAnalysis = await runForensicBackendAnalysis({
+                  url: forensicBackendUrl,
+                  extractedData,
+                });
+              } catch (backendErr: any) {
+                console.warn("Forensic backend analysis failed:", backendErr?.message || backendErr);
+              }
+            }
+
+            let reportJson: any = null;
+            let synthesisError: string | null = null;
+            try {
+              reportJson = await openaiChatJson({
+                apiKey: openaiKey,
+                baseUrl: openaiBaseUrl,
+                model: openaiModelText,
+                system: forensicSystemPrompt(),
+                user: finalSynthesisPrompt({ vaultId: job.vault_id, vaultName, jobId, fileFacts: payload }),
+                temperature: 0,
+                maxTokens: 1800,
+              });
+            } catch (err: any) {
+              synthesisError = err?.message || String(err);
+              console.warn("OpenAI synthesis failed; falling back to forensic-only report:", synthesisError);
+            }
+
+            const reportMd = reportJson ? reportMarkdownFromJson(reportJson) : "";
+            const auditMd = reportMd
+              ? reportMd.replace(/^##\s+Forensic AI Audit Report\s*/i, "## Forensic Audit Report\n\n")
+              : "";
+
+            let combinedReportMd = "";
+            if (forensicAnalysis?.analysis && auditMd) {
+              const forensicMd = formatForensicAnalysisMarkdown({
+                vaultName,
+                analysis: forensicAnalysis.analysis,
+                riskScore: forensicAnalysis.riskScore,
+                filesAnalyzed: forensicAnalysis.filesAnalyzed,
+              });
+              combinedReportMd = `${forensicMd}\n\n---\n\n${auditMd}`;
+            } else if (forensicAnalysis?.analysis) {
+              combinedReportMd = formatForensicAnalysisMarkdown({
+                vaultName,
+                analysis: forensicAnalysis.analysis,
+                riskScore: forensicAnalysis.riskScore,
+                filesAnalyzed: forensicAnalysis.filesAnalyzed,
+              });
+            } else if (auditMd) {
+              combinedReportMd = auditMd;
+            } else {
+              combinedReportMd = "## Forensic Audit Report\n\nReport synthesis failed. Please retry the audit.";
+            }
+
+            combinedReportMd = sanitizeForensicText(combinedReportMd);
+            const reportJsonObject: Record<string, Json> =
+              reportJson && typeof reportJson === "object"
+                ? (reportJson as Record<string, Json>)
+                : {};
+            const mergedReportJson: Json = {
+              ...reportJsonObject,
+              forensic_analysis: forensicAnalysis as Json,
+              synthesis_error: synthesisError as Json,
+            };
             await supabaseAdmin
               .from("audit_jobs")
               .update({
                 status: "completed",
                 progress: 100,
                 completed_at: new Date().toISOString(),
-                report_markdown: reportMd,
-                report_json: reportJson as Json,
+                report_markdown: combinedReportMd,
+                report_json: mergedReportJson,
                 current_step: "Completed",
                 error: null,
               })

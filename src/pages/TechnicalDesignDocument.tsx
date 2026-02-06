@@ -398,7 +398,7 @@ export default function TechnicalDesignDocument() {
                 spacing: { after: 100 },
               }),
               new Paragraph({
-                text: "• xlsx 0.18.5 - Excel file processing",
+                text: "• exceljs 4.4.0 - Excel file processing",
                 spacing: { after: 400 },
               }),
               new Paragraph({
