@@ -159,6 +159,10 @@ function VaultDetailInner() {
   const [cimProgress, setCimProgress] = useState(0);
   const [cimEtaSeconds, setCimEtaSeconds] = useState<number | null>(null);
   const [cimRunId, setCimRunId] = useState<string | null>(null);
+  const [isBuyerMappingOpen, setIsBuyerMappingOpen] = useState(false);
+  const [buyerProgress, setBuyerProgress] = useState(0);
+  const [buyerStatus, setBuyerStatus] = useState('Mapping Buyers/Investors for Dataroom');
+  const buyerTimerRef = useRef<number | null>(null);
   const cimPreviewRef = useRef<HTMLDivElement>(null);
   const cimProgressTimerRef = useRef<number | null>(null);
   const cimStartedAtRef = useRef<number | null>(null);
@@ -170,6 +174,35 @@ function VaultDetailInner() {
     const raw = import.meta.env.VITE_CIM_BACKEND_URL || 'http://localhost:3003';
     return raw.replace(/\/$/, '');
   }, []);
+
+  const stopBuyerTimer = useCallback(() => {
+    if (buyerTimerRef.current) {
+      window.clearInterval(buyerTimerRef.current);
+      buyerTimerRef.current = null;
+    }
+  }, []);
+
+  const startBuyerMapping = useCallback(() => {
+    stopBuyerTimer();
+    setBuyerProgress(0);
+    setBuyerStatus('Mapping Buyers/Investors for Dataroom');
+    let current = 0;
+    buyerTimerRef.current = window.setInterval(() => {
+      current = Math.min(100, current + 5);
+      setBuyerProgress(current);
+      if (current >= 100) {
+        stopBuyerTimer();
+        setBuyerStatus('Completed');
+        const url = `${window.location.origin}/assets/buyerMap.xlsx`;
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `buyerMap_${vault?.name || 'dataroom'}.xlsx`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+      }
+    }, 700);
+  }, [stopBuyerTimer, vault?.name]);
 
   const loadLatestCim = useCallback(async () => {
     if (!vaultId) return;
@@ -1709,6 +1742,12 @@ function VaultDetailInner() {
   }, [isCimDialogOpen, loadLatestCim]);
 
   useEffect(() => {
+    if (!isBuyerMappingOpen) return;
+    startBuyerMapping();
+    return () => stopBuyerTimer();
+  }, [isBuyerMappingOpen, startBuyerMapping, stopBuyerTimer]);
+
+  useEffect(() => {
     loadAuditState();
   }, [loadAuditState]);
 
@@ -2010,6 +2049,25 @@ function VaultDetailInner() {
                       )}
                     </ScrollArea>
                   </div>
+                </div>
+              </DialogContent>
+            </Dialog>
+
+            <Dialog open={isBuyerMappingOpen} onOpenChange={setIsBuyerMappingOpen}>
+              <DialogTrigger asChild>
+                <Button variant="outline" size="sm" className="text-xs sm:text-sm">
+                  <FileText className="w-3 h-3 sm:w-4 sm:h-4 mr-1 sm:mr-2" />
+                  Buyer Mapping
+                </Button>
+              </DialogTrigger>
+              <DialogContent className="sm:max-w-[520px]">
+                <DialogHeader>
+                  <DialogTitle className="font-display text-xl">Buyer Mapping</DialogTitle>
+                </DialogHeader>
+                <div className="space-y-4">
+                  <p className="text-sm text-muted-foreground">{buyerStatus}</p>
+                  <Progress value={buyerProgress} className="h-2" />
+                  <p className="text-xs text-muted-foreground">{Math.round(buyerProgress)}%</p>
                 </div>
               </DialogContent>
             </Dialog>
