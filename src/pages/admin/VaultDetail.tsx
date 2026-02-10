@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback, useRef, useMemo } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
 import { DashboardLayout } from '@/components/layout/DashboardLayout';
 import { supabase } from '@/integrations/supabase/client';
@@ -11,6 +11,15 @@ import {
   DialogTitle,
   DialogTrigger,
 } from '@/components/ui/dialog';
+import { Progress } from '@/components/ui/progress';
+import { ScrollArea } from '@/components/ui/scroll-area';
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
+import jsPDF from 'jspdf';
+import html2canvas from 'html2canvas';
+import { runCIMGeneration } from '@/services/CIM/cimGenerationController';
+import type { CIMReport } from '@/services/CIM/types';
 import { useToast } from '@/hooks/use-toast';
 import { useAuth } from '@/contexts/AuthContext';
 import DocumentViewerModal from '@/components/DocumentViewerModal';
@@ -73,7 +82,7 @@ interface VaultInfo {
   description: string | null;
 }
 
-export default function VaultDetail() {
+function VaultDetailInner() {
   const { vaultId } = useParams<{ vaultId: string }>();
   const { user } = useAuth();
   const { toast } = useToast();
@@ -98,6 +107,134 @@ export default function VaultDetail() {
   const [investorNdaTemplate, setInvestorNdaTemplate] = useState<any>(null);
   const [renamingItem, setRenamingItem] = useState<{ type: 'folder' | 'document'; id: string; currentName: string } | null>(null);
   const [renameValue, setRenameValue] = useState('');
+  const [isAuditDialogOpen, setIsAuditDialogOpen] = useState(false);
+  const [isAuditExpanded, setIsAuditExpanded] = useState(true);
+  const [auditJobId, setAuditJobId] = useState<string | null>(null);
+  const [auditJob, setAuditJob] = useState<any>(null);
+  const [auditIsRunning, setAuditIsRunning] = useState(false);
+  const [auditError, setAuditError] = useState<string | null>(null);
+  const reportContentRef = useRef<HTMLDivElement>(null);
+  const isRestartingRef = useRef(false);
+  const sanitizedReportMarkdown = useMemo(() => {
+    const safeStringify = (input: unknown) => {
+      try {
+        const seen = new WeakSet();
+        return JSON.stringify(
+          input,
+          (_key, value) => {
+            if (typeof value === 'bigint') return value.toString();
+            if (typeof value === 'object' && value !== null) {
+              if (seen.has(value)) return '[Circular]';
+              seen.add(value);
+            }
+            return value;
+          },
+          2
+        );
+      } catch {
+        return '';
+      }
+    };
+
+    try {
+      const raw = auditJob?.report_markdown;
+      const md = typeof raw === 'string' ? raw : raw ? safeStringify(raw) : '';
+      return md
+        .replace(/^[=]{5,}\s*$/gm, '')
+        .replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/gu, '')
+        .replace(/non-hallucination policy.*$/gmi, '')
+        .replace(/^```+$/gm, '')
+        .replace(/^\*\*\s*([A-Z0-9][A-Z0-9\s:#\-]{6,})\s*\*\*$/gm, '$1')
+        .replace(/^\*\*\s*(RED FLAG[^*]+)\s*\*\*$/gmi, '$1')
+        .replace(/\n{3,}/g, '\n\n')
+        .trim();
+    } catch {
+      return '';
+    }
+  }, [auditJob?.report_markdown]);
+  const [isCimDialogOpen, setIsCimDialogOpen] = useState(false);
+  const [cimReport, setCimReport] = useState<CIMReport | null>(null);
+  const [cimIsRunning, setCimIsRunning] = useState(false);
+  const [cimError, setCimError] = useState<string | null>(null);
+  const [cimProgress, setCimProgress] = useState(0);
+  const [cimEtaSeconds, setCimEtaSeconds] = useState<number | null>(null);
+  const [cimRunId, setCimRunId] = useState<string | null>(null);
+  const [isBuyerMappingOpen, setIsBuyerMappingOpen] = useState(false);
+  const [buyerProgress, setBuyerProgress] = useState(0);
+  const [buyerStatus, setBuyerStatus] = useState('Mapping Buyers/Investors for Dataroom');
+  const buyerTimerRef = useRef<number | null>(null);
+  const cimPreviewRef = useRef<HTMLDivElement>(null);
+  const cimProgressTimerRef = useRef<number | null>(null);
+  const cimStartedAtRef = useRef<number | null>(null);
+  const cimAbortControllerRef = useRef<AbortController | null>(null);
+  const cimHtml = useMemo(() => {
+    const raw = cimReport?.cimReport;
+    return typeof raw === 'string' ? raw : '';
+  }, [cimReport?.cimReport]);
+  const cimBackendUrl = useMemo(() => {
+    const raw = import.meta.env.VITE_CIM_BACKEND_URL || 'http://localhost:3003';
+    return raw.replace(/\/$/, '');
+  }, []);
+
+  const stopBuyerTimer = useCallback(() => {
+    if (buyerTimerRef.current) {
+      window.clearInterval(buyerTimerRef.current);
+      buyerTimerRef.current = null;
+    }
+  }, []);
+
+  const startBuyerMapping = useCallback(() => {
+    stopBuyerTimer();
+    setBuyerProgress(0);
+    setBuyerStatus('Mapping Buyers/Investors for Dataroom');
+    let current = 0;
+    buyerTimerRef.current = window.setInterval(() => {
+      current = Math.min(100, current + 5);
+      setBuyerProgress(current);
+      if (current >= 100) {
+        stopBuyerTimer();
+        setBuyerStatus('Completed');
+        const url = `${window.location.origin}/assets/buyerMap.xlsx`;
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `buyerMap_${vault?.name || 'dataroom'}.xlsx`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+      }
+    }, 700);
+  }, [stopBuyerTimer, vault?.name]);
+
+  const loadLatestCim = useCallback(async () => {
+    if (!vaultId) return;
+    try {
+      const { data, error } = await supabase
+        .from('cim_reports')
+        .select('id, vault_id, vault_name, created_by, created_at, report_content, files_analyzed')
+        .eq('vault_id', vaultId)
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      if (error || !data) return;
+      const reportContent = typeof data.report_content === 'string'
+        ? data.report_content
+        : data.report_content
+        ? JSON.stringify(data.report_content, null, 2)
+        : '';
+      setCimReport({
+        reportId: data.id || `cim_${Date.now()}`,
+        vaultId: data.vault_id,
+        vaultName: data.vault_name || vault?.name || 'Dataroom',
+        createdBy: data.created_by || 'unknown',
+        timestamp: data.created_at || new Date().toISOString(),
+        cimReport: reportContent,
+        filesAnalyzed: data.files_analyzed || 0,
+        status: 'completed',
+      });
+    } catch {
+      // Ignore load errors for now
+    }
+  }, [vaultId, vault?.name]);
 
   const fetchVaultData = useCallback(async () => {
     if (!vaultId || !user) return;
@@ -329,6 +466,7 @@ export default function VaultDetail() {
     
     buildBreadcrumbs();
   }, [vault, currentFolderId]);
+
 
   const handleCreateFolder = async () => {
     if (!newFolderName.trim() || !vaultId || !user) return;
@@ -1105,6 +1243,545 @@ export default function VaultDetail() {
     }
   };
 
+  const estimateAuditRemainingSeconds = useCallback((job: any) => {
+    try {
+      if (typeof job?.estimated_remaining_seconds === 'number' && job.estimated_remaining_seconds >= 0) {
+        return job.estimated_remaining_seconds;
+      }
+      if (!job?.started_at) return null;
+      const total = Number(job?.total_files ?? 0);
+      const processed = Number(job?.processed_files ?? 0);
+      if (!total || processed <= 0) return null;
+      const startedAt = new Date(job.started_at).getTime();
+      const elapsedSec = Math.max(1, (Date.now() - startedAt) / 1000);
+      const avgPerFile = elapsedSec / processed;
+      const remaining = Math.max(0, Math.round((total - processed) * avgPerFile));
+      return remaining;
+    } catch {
+      return null;
+    }
+  }, []);
+
+  const formatDuration = useCallback((seconds: number | null) => {
+    if (seconds == null || !Number.isFinite(seconds)) return '—';
+    const s = Math.max(0, Math.floor(seconds));
+    const h = Math.floor(s / 3600);
+    const m = Math.floor((s % 3600) / 60);
+    const ss = s % 60;
+    if (h > 0) return `${h}h ${m}m`;
+    if (m > 0) return `${m}m ${ss}s`;
+    return `${ss}s`;
+  }, []);
+
+  const startAudit = useCallback(async () => {
+    if (!vaultId) return;
+    setAuditError(null);
+    setAuditIsRunning(true);
+    setAuditJob(null);
+    setAuditJobId(null);
+
+    try {
+      const { data, error } = await supabase.functions.invoke('audit-vault', {
+        body: { action: 'start', vaultId },
+      });
+      if (error) throw error;
+      if (!data?.jobId) {
+        throw new Error('Audit start failed (no jobId returned)');
+      }
+
+      setAuditJobId(data.jobId);
+      localStorage.setItem(`nidhi:auditJobId:${vaultId}`, data.jobId);
+
+      const runRes = await supabase.functions.invoke('audit-vault', {
+        body: { action: 'run', jobId: data.jobId, maxFiles: 2 },
+      });
+      if (runRes.error) throw runRes.error;
+      setAuditJob(runRes.data?.job ?? null);
+    } catch (e: any) {
+      const msg = e?.message || e?.error || 'Failed to start audit';
+      setAuditError(msg);
+    } finally {
+      setAuditIsRunning(false);
+    }
+  }, [vaultId]);
+
+  const runAuditBatch = useCallback(async () => {
+    if (!auditJobId || auditIsRunning) return;
+    setAuditIsRunning(true);
+    try {
+      const { data, error } = await supabase.functions.invoke('audit-vault', {
+        body: { action: 'run', jobId: auditJobId, maxFiles: 2 },
+      });
+      if (error) throw error;
+      setAuditJob(data?.job ?? null);
+      setAuditError(null);
+    } catch (e: any) {
+      const msg = e?.message || e?.error || 'Audit batch failed';
+      setAuditError(msg);
+    } finally {
+      setAuditIsRunning(false);
+    }
+  }, [auditJobId, auditIsRunning]);
+
+  const loadAuditState = useCallback(async () => {
+    if (!vaultId || isRestartingRef.current) return;
+    setAuditError(null);
+
+    const persistedJobId = localStorage.getItem(`nidhi:auditJobId:${vaultId}`);
+    if (persistedJobId) {
+      setAuditJobId(persistedJobId);
+      try {
+        const { data, error } = await supabase.functions.invoke('audit-vault', {
+          body: { action: 'status', jobId: persistedJobId },
+        });
+        if (!error && data?.job) {
+          if (data.job.status === 'cancelled') {
+            setAuditJobId(null);
+            setAuditJob(null);
+            localStorage.removeItem(`nidhi:auditJobId:${vaultId}`);
+            return;
+          }
+          setAuditJob(data.job);
+          return;
+        }
+      } catch (e) {
+        console.warn('Audit status check failed, will try DB lookup:', e);
+      }
+    }
+
+    try {
+      const { data: latestJob } = await supabase
+        .from('audit_jobs')
+        .select('*')
+        .eq('vault_id', vaultId)
+        .neq('status', 'cancelled')
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      if (latestJob?.id) {
+        setAuditJobId(latestJob.id);
+        setAuditJob(latestJob);
+        localStorage.setItem(`nidhi:auditJobId:${vaultId}`, latestJob.id);
+      }
+    } catch (e: any) {
+      console.warn('Failed to load latest audit job:', e?.message || e);
+    }
+  }, [vaultId]);
+
+  const stopAndRestartAudit = useCallback(async () => {
+    if (!vaultId || isRestartingRef.current) return;
+    isRestartingRef.current = true;
+    setAuditIsRunning(true);
+
+    const hadExistingJob = !!auditJobId;
+    const jobIdToCancel = auditJobId;
+
+    try {
+      if (jobIdToCancel) {
+        try {
+          await supabase.functions.invoke('audit-vault', {
+            body: { action: 'cancel', jobId: jobIdToCancel },
+          });
+        } catch (e) {
+          console.warn('Failed to cancel previous job:', e);
+        }
+      }
+
+      setAuditJobId(null);
+      setAuditJob(null);
+      setAuditError(null);
+      localStorage.removeItem(`nidhi:auditJobId:${vaultId}`);
+
+      if (jobIdToCancel) {
+        await new Promise(resolve => setTimeout(resolve, 500));
+      }
+
+      await startAudit();
+
+      toast({
+        title: hadExistingJob ? 'Audit Restarted' : 'Audit Started',
+        description: hadExistingJob
+          ? 'The previous audit has been cancelled and a new audit has been started.'
+          : 'A new audit has been started.',
+      });
+    } catch (e: any) {
+      toast({
+        title: 'Error',
+        description: e?.message || 'Failed to restart audit. Please try again.',
+        variant: 'destructive',
+      });
+    } finally {
+      isRestartingRef.current = false;
+      setAuditIsRunning(false);
+    }
+  }, [vaultId, auditJobId, startAudit, toast]);
+
+  const downloadAuditReport = useCallback(async () => {
+    const md = auditJob?.report_markdown;
+    if (!md || !reportContentRef.current) return;
+
+    try {
+      toast({
+        title: 'Generating PDF...',
+        description: 'Please wait while the report is being converted to PDF.',
+      });
+
+      await new Promise(resolve => setTimeout(resolve, 300));
+
+      const sourceElement = reportContentRef.current;
+      const renderedHTML = sourceElement.innerHTML;
+
+      if (!renderedHTML || renderedHTML.trim().length === 0) {
+        throw new Error('Report content is empty. Please ensure the report is fully loaded.');
+      }
+
+      const tempDiv = document.createElement('div');
+      tempDiv.style.position = 'absolute';
+      tempDiv.style.left = '-9999px';
+      tempDiv.style.top = '0';
+      tempDiv.style.width = '210mm';
+      tempDiv.style.padding = '18mm';
+      tempDiv.style.backgroundColor = '#ffffff';
+      tempDiv.style.color = '#0f172a';
+      tempDiv.style.fontFamily = 'Inter, Arial, Helvetica, sans-serif';
+      tempDiv.style.fontSize = '11pt';
+      tempDiv.style.lineHeight = '1.55';
+      tempDiv.style.overflow = 'visible';
+
+      const innerDiv = document.createElement('div');
+      innerDiv.innerHTML = renderedHTML;
+      innerDiv.style.maxWidth = '100%';
+      innerDiv.style.color = '#0f172a';
+
+      const headings = innerDiv.querySelectorAll('h1, h2, h3, h4, h5, h6');
+      headings.forEach((h) => {
+        const el = h as HTMLElement;
+        el.style.fontWeight = '700';
+        el.style.color = '#0f172a';
+        el.style.marginTop = '18px';
+        el.style.marginBottom = '8px';
+      });
+
+      innerDiv.querySelectorAll('h1').forEach((h) => {
+        const el = h as HTMLElement;
+        el.style.fontSize = '15pt';
+        el.style.color = '#0f172a';
+      });
+
+      innerDiv.querySelectorAll('h2').forEach((h) => {
+        const el = h as HTMLElement;
+        el.style.fontSize = '12.5pt';
+        el.style.color = '#1d4ed8';
+        el.style.borderBottom = '1px solid #dbeafe';
+        el.style.paddingBottom = '6px';
+      });
+
+      innerDiv.querySelectorAll('h3').forEach((h) => {
+        const el = h as HTMLElement;
+        el.style.fontSize = '11.5pt';
+        el.style.color = '#0f766e';
+      });
+
+      innerDiv.querySelectorAll('h4').forEach((h) => {
+        const el = h as HTMLElement;
+        el.style.fontSize = '11pt';
+        el.style.color = '#b45309';
+        el.style.background = '#fff7ed';
+        el.style.borderLeft = '4px solid #f59e0b';
+        el.style.padding = '6px 10px';
+        el.style.borderRadius = '6px';
+      });
+
+      innerDiv.querySelectorAll('p').forEach((p) => {
+        const el = p as HTMLElement;
+        el.style.marginBottom = '10px';
+        el.style.color = '#0f172a';
+      });
+
+      innerDiv.querySelectorAll('ul, ol').forEach((list) => {
+        const el = list as HTMLElement;
+        el.style.marginLeft = '18px';
+        el.style.marginBottom = '10px';
+      });
+
+      innerDiv.querySelectorAll('li').forEach((li) => {
+        const el = li as HTMLElement;
+        el.style.marginBottom = '6px';
+      });
+
+      innerDiv.querySelectorAll('strong').forEach((s) => {
+        const el = s as HTMLElement;
+        el.style.fontWeight = '700';
+        el.style.color = '#0f172a';
+      });
+
+      innerDiv.querySelectorAll('pre, code').forEach((code) => {
+        const el = code as HTMLElement;
+        el.style.backgroundColor = '#f1f5f9';
+        el.style.padding = '4px 6px';
+        el.style.borderRadius = '4px';
+        el.style.fontFamily = 'Menlo, Consolas, monospace';
+        el.style.fontSize = '10pt';
+      });
+
+      innerDiv.querySelectorAll('hr').forEach((hr) => {
+        const el = hr as HTMLElement;
+        el.style.border = '0';
+        el.style.height = '1px';
+        el.style.background = '#e2e8f0';
+        el.style.margin = '16px 0';
+      });
+
+      innerDiv.querySelectorAll('table').forEach((table) => {
+        const el = table as HTMLElement;
+        el.style.width = '100%';
+        el.style.borderCollapse = 'collapse';
+        el.style.margin = '12px 0';
+      });
+
+      innerDiv.querySelectorAll('th, td').forEach((cell) => {
+        const el = cell as HTMLElement;
+        el.style.border = '1px solid #e2e8f0';
+        el.style.padding = '6px 8px';
+        el.style.fontSize = '10.5pt';
+      });
+
+      innerDiv.querySelectorAll('th').forEach((cell) => {
+        const el = cell as HTMLElement;
+        el.style.backgroundColor = '#f1f5f9';
+        el.style.color = '#334155';
+        el.style.fontWeight = '600';
+      });
+
+      tempDiv.appendChild(innerDiv);
+      document.body.appendChild(tempDiv);
+
+      await new Promise(resolve => setTimeout(resolve, 200));
+      void tempDiv.offsetHeight;
+
+      const canvas = await html2canvas(tempDiv, {
+        scale: 2,
+        useCORS: true,
+        backgroundColor: '#ffffff',
+        logging: false,
+        width: tempDiv.scrollWidth,
+        height: tempDiv.scrollHeight,
+      });
+
+      document.body.removeChild(tempDiv);
+
+      const imgWidth = 210;
+      const pageHeight = 297;
+      const pageMargin = 10;
+      const usablePageHeight = pageHeight - (2 * pageMargin);
+      const usablePageWidth = imgWidth - (2 * pageMargin);
+      const imgHeight = (canvas.height * imgWidth) / canvas.width;
+
+      const pdf = new jsPDF('p', 'mm', 'a4');
+      let sourceY = 0;
+      let remainingHeight = canvas.height;
+
+      while (remainingHeight > 0) {
+        const sourceHeight = Math.min(
+          remainingHeight,
+          (usablePageHeight / imgHeight) * canvas.height
+        );
+
+        const pageCanvas = document.createElement('canvas');
+        pageCanvas.width = canvas.width;
+        pageCanvas.height = sourceHeight;
+        const pageCtx = pageCanvas.getContext('2d');
+        if (!pageCtx) {
+          throw new Error('Failed to create canvas context');
+        }
+
+        pageCtx.drawImage(
+          canvas,
+          0, sourceY, canvas.width, sourceHeight,
+          0, 0, canvas.width, sourceHeight
+        );
+
+        const pageImgDataUrl = pageCanvas.toDataURL('image/png');
+        const pageImgHeight = (sourceHeight / canvas.height) * imgHeight * (usablePageWidth / imgWidth);
+
+        pdf.addImage(
+          pageImgDataUrl,
+          'PNG',
+          pageMargin,
+          pageMargin,
+          usablePageWidth,
+          pageImgHeight
+        );
+
+        sourceY += sourceHeight;
+        remainingHeight -= sourceHeight;
+        if (remainingHeight > 0) {
+          pdf.addPage();
+        }
+      }
+
+      const pdfBlob = pdf.output('blob');
+      const fileName = `audit_report_${vaultId}_${auditJob?.id || 'job'}.pdf`;
+      const url = URL.createObjectURL(pdfBlob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = fileName;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+
+      toast({
+        title: 'PDF Generated',
+        description: 'The audit report has been downloaded as PDF.',
+      });
+    } catch (error: any) {
+      console.error('Error generating PDF:', error);
+      toast({
+        title: 'Error generating PDF',
+        description: error?.message || 'Failed to generate PDF. Please try again.',
+        variant: 'destructive',
+      });
+    }
+  }, [auditJob, vaultId, toast]);
+
+  const stopCimProgressTimer = useCallback(() => {
+    if (cimProgressTimerRef.current) {
+      window.clearInterval(cimProgressTimerRef.current);
+      cimProgressTimerRef.current = null;
+    }
+  }, []);
+
+  const pollCimStatus = useCallback(async () => {
+    if (!vaultId) return;
+    try {
+      const res = await fetch(`${cimBackendUrl}/api/cim-status?vaultId=${encodeURIComponent(vaultId)}`);
+      if (!res.ok) return;
+      const status = await res.json();
+      if (cimRunId && status?.runId && status.runId !== cimRunId) {
+        return;
+      }
+      if (typeof status?.progress === 'number') {
+        setCimProgress(Math.min(100, Math.max(0, status.progress)));
+      }
+      if (typeof status?.etaSeconds === 'number') {
+        setCimEtaSeconds(status.etaSeconds);
+      } else {
+        setCimEtaSeconds(null);
+      }
+      if (status?.status === 'completed' || status?.status === 'failed') {
+        stopCimProgressTimer();
+      }
+    } catch {
+      // ignore polling failures
+    }
+  }, [vaultId, cimBackendUrl, stopCimProgressTimer, cimRunId]);
+
+  const downloadCimPdf = useCallback(async (report: CIMReport) => {
+    if (!cimPreviewRef.current) return;
+    const html2pdf = (await import('html2pdf.js')).default;
+    const element = cimPreviewRef.current;
+    const safeName = (report.vaultName || 'CIM').replace(/\s+/g, '_');
+    const options = {
+      margin: 10,
+      filename: `CIM_${safeName}_${new Date().toISOString().split('T')[0]}.pdf`,
+      image: { type: 'jpeg', quality: 0.98 },
+      html2canvas: { scale: 2, backgroundColor: '#ffffff' },
+      jsPDF: { orientation: 'portrait', unit: 'mm', format: 'a4' },
+    };
+
+    html2pdf().set(options).from(element).save();
+  }, []);
+
+  const startCimGeneration = useCallback(async () => {
+    if (!vaultId || !vault || !user) return;
+    setCimError(null);
+    setCimIsRunning(true);
+    const runId = `${Date.now()}`;
+    setCimRunId(runId);
+    setCimProgress(10);
+    setCimEtaSeconds(null);
+    cimStartedAtRef.current = Date.now();
+    stopCimProgressTimer();
+    cimProgressTimerRef.current = window.setInterval(pollCimStatus, 2000);
+    pollCimStatus();
+
+    try {
+      cimAbortControllerRef.current = new AbortController();  // ✅ ADD THIS
+      const report = await runCIMGeneration(vaultId, vault.name, user.id, cimAbortControllerRef.current.signal, runId);  // ✅ UPDATED
+      setCimReport(report);
+      setCimProgress(100);
+      setCimEtaSeconds(null);
+      stopCimProgressTimer();
+      setTimeout(() => {
+        downloadCimPdf(report);
+      }, 300);
+    } catch (e: any) {
+      setCimError(e?.message || 'Failed to generate CIM');
+      stopCimProgressTimer();
+      setCimProgress(0);
+      setCimEtaSeconds(null);
+    } finally {
+      setCimIsRunning(false);
+    }
+  }, [vaultId, vault, user, stopCimProgressTimer, downloadCimPdf, pollCimStatus]);
+  const handleStopCim = useCallback(() => {
+    if (cimAbortControllerRef.current) {
+      console.log('Stopping CIM generation...');
+      cimAbortControllerRef.current.abort();
+      setCimIsRunning(false);
+      setCimError('CIM generation was cancelled');
+      setCimProgress(0);
+      setCimEtaSeconds(null);
+      stopCimProgressTimer();
+    }
+  }, [stopCimProgressTimer]);
+  const regenerateCim = useCallback(async () => {
+    setCimReport(null);
+    await startCimGeneration();
+  }, [startCimGeneration]);
+
+  useEffect(() => {
+    return () => {
+      stopCimProgressTimer();
+    };
+  }, [stopCimProgressTimer]);
+
+  useEffect(() => {
+    if (!isCimDialogOpen) return;
+    loadLatestCim();
+  }, [isCimDialogOpen, loadLatestCim]);
+
+  useEffect(() => {
+    if (!isBuyerMappingOpen) return;
+    startBuyerMapping();
+    return () => stopBuyerTimer();
+  }, [isBuyerMappingOpen, startBuyerMapping, stopBuyerTimer]);
+
+  useEffect(() => {
+    loadAuditState();
+  }, [loadAuditState]);
+
+  useEffect(() => {
+    if (!auditJobId) return;
+    if (auditJob?.status === 'completed' || auditJob?.status === 'failed' || auditJob?.status === 'cancelled') return;
+    if (isRestartingRef.current) return;
+
+    const t = setInterval(() => {
+      if (!auditIsRunning && !isRestartingRef.current) {
+        runAuditBatch();
+      }
+    }, 4000);
+
+    return () => clearInterval(t);
+  }, [auditJobId, auditJob?.status, auditIsRunning, runAuditBatch]);
+
+  useEffect(() => {
+    if (!isAuditDialogOpen) return;
+    loadAuditState();
+  }, [isAuditDialogOpen, loadAuditState]);
+
   const formatFileSize = (bytes: number | null) => {
     if (!bytes) return 'Unknown';
     if (bytes < 1024) return `${bytes} B`;
@@ -1161,6 +1838,262 @@ export default function VaultDetail() {
           </div>
           
           <div className="flex flex-wrap items-center gap-2 sm:gap-3">
+            <Dialog open={isAuditDialogOpen} onOpenChange={setIsAuditDialogOpen}>
+              <DialogTrigger asChild>
+                <Button variant="gold" size="sm" className="text-xs sm:text-sm">
+                  <FileText className="w-3 h-3 sm:w-4 sm:h-4 mr-1 sm:mr-2" />
+                  Audit Documents
+                </Button>
+              </DialogTrigger>
+              <DialogContent className="sm:max-w-[800px] max-h-[90vh] flex flex-col overflow-hidden">
+                <DialogHeader>
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <DialogTitle className="font-display text-xl">Audit Documents</DialogTitle>
+                    </div>
+                    <Collapsible open={isAuditExpanded} onOpenChange={setIsAuditExpanded}>
+                      <CollapsibleTrigger asChild>
+                        <Button variant="outline" size="sm" className="mr-6">
+                          {isAuditExpanded ? 'Collapse' : 'Expand'}
+                        </Button>
+                      </CollapsibleTrigger>
+                    </Collapsible>
+                  </div>
+                </DialogHeader>
+
+                <div className="space-y-4 py-2 flex-1 min-h-0 min-w-0 overflow-hidden">
+                  <div className="rounded-lg border border-gold/10 p-3 bg-muted/10">
+                    <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+                      <div className="min-w-0">
+                        <p className="text-sm text-muted-foreground">
+                          This runs an evidence-cited forensic audit. It will only report red flags backed by extracted text/quotes. Batches run automatically every few seconds while processing.
+                        </p>
+                        {auditError && (
+                          <p className="text-sm text-destructive mt-2">{auditError}</p>
+                        )}
+                      </div>
+                      <div className="flex items-center gap-2 flex-shrink-0">
+                        <Button
+                          variant="gold"
+                          size="sm"
+                          onClick={startAudit}
+                          disabled={auditIsRunning || (auditJob?.status === 'running' || auditJob?.status === 'queued')}
+                        >
+                          {auditJob?.status === 'running' || auditJob?.status === 'queued' ? 'Audit Running' : 'Start Audit'}
+                        </Button>
+                        <Button
+                          variant="destructive"
+                          size="sm"
+                          onClick={stopAndRestartAudit}
+                          disabled={auditIsRunning || isRestartingRef.current}
+                        >
+                          Stop & Restart
+                        </Button>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={downloadAuditReport}
+                          disabled={!auditJob?.report_markdown}
+                        >
+                          Download Report
+                        </Button>
+                      </div>
+                    </div>
+
+                    <div className="mt-4 space-y-2">
+                      <div className="flex items-center justify-between text-sm">
+                        <span className="text-muted-foreground">
+                          Status: <span className="text-foreground">{auditJob?.status || (auditJobId ? 'running' : 'not started')}</span>
+                        </span>
+                        <span className="text-muted-foreground">
+                          Files: <span className="text-foreground">{auditJob?.processed_files ?? 0}/{auditJob?.total_files ?? 0}</span>
+                          {" · "}
+                          ETA: <span className="text-foreground">{formatDuration(estimateAuditRemainingSeconds(auditJob))}</span>
+                        </span>
+                      </div>
+                      <Progress value={Number(auditJob?.progress ?? 0)} className="h-2" />
+                      <div className="flex items-center justify-between text-xs text-muted-foreground">
+                        <span>{auditJob?.current_step || '—'}</span>
+                        <span>{Math.round(Number(auditJob?.progress ?? 0))}%</span>
+                      </div>
+                    </div>
+                  </div>
+
+                  <Collapsible open={isAuditExpanded} onOpenChange={setIsAuditExpanded}>
+                    <CollapsibleContent className="min-h-0 min-w-0">
+                      <div className="rounded-lg border border-gold/10 overflow-hidden flex-1 min-h-0">
+                        <div className="px-3 py-2 border-b border-gold/10 bg-muted/5">
+                          <p className="text-sm font-medium text-foreground">Report Preview</p>
+                          <p className="text-xs text-muted-foreground">Available after completion. Download for sharing.</p>
+                        </div>
+                        <ScrollArea className="h-[40vh] p-3 max-w-full overflow-hidden">
+                          {auditJob?.report_markdown ? (
+                            <div ref={reportContentRef} className="w-full max-w-full overflow-hidden">
+                              <div className="w-full max-w-full rounded-xl border border-slate-200 bg-white shadow-sm overflow-hidden">
+                                <div className="border-b border-slate-200 bg-slate-50 px-4 py-3">
+                                  <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                                    <div className="min-w-0">
+                                      <p className="text-xs uppercase tracking-widest text-slate-500">Forensic Audit Report</p>
+                                      <p className="text-base font-semibold text-slate-900 truncate">
+                                        {vault?.name ?? 'Dataroom'} · Report Preview
+                                      </p>
+                                    </div>
+                                    <div className="text-xs text-slate-500">
+                                      Status: <span className="text-slate-800">{auditJob?.status || 'completed'}</span>
+                                    </div>
+                                  </div>
+                                  <div className="mt-2 flex flex-wrap gap-2 text-xs text-slate-600">
+                                    <span className="rounded-full border border-slate-200 bg-white px-2.5 py-1">
+                                      Files: {auditJob?.processed_files ?? 0}/{auditJob?.total_files ?? 0}
+                                    </span>
+                                    <span className="rounded-full border border-slate-200 bg-white px-2.5 py-1">
+                                      Progress: {Math.round(Number(auditJob?.progress ?? 0))}%
+                                    </span>
+                                  </div>
+                                </div>
+                                <div className="p-4">
+                                  <div className="prose prose-sm max-w-none break-words [overflow-wrap:anywhere] prose-headings:font-display prose-h1:text-lg prose-h2:text-base prose-h3:text-sm prose-h4:text-sm prose-h2:text-indigo-700 prose-h3:text-emerald-700 prose-h4:text-amber-700 prose-h4:bg-amber-50 prose-h4:border-l-4 prose-h4:border-amber-400 prose-h4:pl-3 prose-h4:py-1 prose-h4:rounded-md prose-p:text-slate-700 prose-strong:text-slate-900 prose-ul:text-slate-700 prose-ol:text-slate-700 prose-li:text-slate-700 prose-code:text-slate-700 prose-pre:bg-slate-50 prose-pre:text-slate-700 prose-pre:whitespace-pre-wrap prose-pre:overflow-x-auto prose-code:break-words prose-table:border prose-table:border-slate-200 prose-th:border prose-th:border-slate-200 prose-td:border prose-td:border-slate-200 prose-th:bg-slate-100 prose-th:text-slate-700 prose-th:font-semibold prose-thead:border-b prose-thead:border-slate-200">
+                                    <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                                      {sanitizedReportMarkdown}
+                                    </ReactMarkdown>
+                                  </div>
+                                </div>
+                              </div>
+                            </div>
+                          ) : (
+                            <p className="text-sm text-muted-foreground">Report not generated yet.</p>
+                          )}
+                        </ScrollArea>
+                      </div>
+                    </CollapsibleContent>
+                  </Collapsible>
+                </div>
+              </DialogContent>
+            </Dialog>
+
+            <Dialog open={isCimDialogOpen} onOpenChange={setIsCimDialogOpen}>
+              <DialogTrigger asChild>
+                <Button variant="outline" size="sm" className="text-xs sm:text-sm">
+                  <FileText className="w-3 h-3 sm:w-4 sm:h-4 mr-1 sm:mr-2" />
+                  Generate CIM
+                </Button>
+              </DialogTrigger>
+              <DialogContent className="sm:max-w-[900px] max-h-[90vh] flex flex-col overflow-hidden">
+                <DialogHeader>
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <DialogTitle className="font-display text-xl">Generate CIM</DialogTitle>
+                    </div>
+                  </div>
+                </DialogHeader>
+
+                <div className="space-y-4 py-2 flex-1 min-h-0 min-w-0 overflow-hidden">
+                  <div className="rounded-lg border border-gold/10 p-3 bg-muted/10">
+                    <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+                      <div className="min-w-0">
+                        <p className="text-sm text-muted-foreground">
+                          Generates a Confidential Information Memorandum using all documents in this dataroom.
+                        </p>
+                        {cimError && (
+                          <p className="text-sm text-destructive mt-2">{cimError}</p>
+                        )}
+                      </div>
+                      <div className="flex items-center gap-2 flex-shrink-0">
+                        <Button
+                          variant="gold"
+                          size="sm"
+                          onClick={startCimGeneration}
+                          disabled={cimIsRunning}
+                        >
+                          {cimIsRunning ? 'Generating...' : 'Start'}
+                        </Button>
+                        {cimIsRunning && (
+                          <Button
+                            variant="destructive"
+                            size="sm"
+                            onClick={handleStopCim}
+                            title="Click to stop the CIM generation"
+                          >
+                            ⏹️ Stop
+                          </Button>
+                        )}
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={regenerateCim}
+                          disabled={cimIsRunning}
+                        >
+                          Regenerate
+                        </Button>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => cimReport && downloadCimPdf(cimReport)}
+                          disabled={!cimReport}
+                        >
+                          Download CIM
+                        </Button>
+                      </div>
+                    </div>
+
+                    <div className="mt-4 space-y-2">
+                      <div className="flex items-center justify-between text-sm">
+                        <span className="text-muted-foreground">
+                          Status: <span className="text-foreground">{cimIsRunning ? 'running' : cimReport ? 'completed' : 'not started'}</span>
+                        </span>
+                        <span className="text-muted-foreground">
+                          ETA: <span className="text-foreground">{formatDuration(cimEtaSeconds)}</span>
+                        </span>
+                      </div>
+                      <Progress value={Number(cimProgress)} className="h-2" />
+                      <div className="flex items-center justify-between text-xs text-muted-foreground">
+                        <span>{cimIsRunning ? 'Generating CIM report' : '—'}</span>
+                        <span>{Math.round(Number(cimProgress))}%</span>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="rounded-lg border border-gold/10 overflow-hidden flex-1 min-h-0">
+                    <div className="px-3 py-2 border-b border-gold/10 bg-muted/5">
+                      <p className="text-sm font-medium text-foreground">CIM Preview</p>
+                      <p className="text-xs text-muted-foreground">Preview updates after generation.</p>
+                    </div>
+                    <ScrollArea className="h-[45vh] p-3 max-w-full overflow-hidden bg-white">
+                      {cimReport ? (
+                        <div
+                          ref={cimPreviewRef}
+                          id="cim-report-content"
+                          className="max-w-none text-slate-800"
+                          dangerouslySetInnerHTML={{ __html: cimHtml }}
+                        />
+                      ) : (
+                        <p className="text-sm text-muted-foreground">CIM not generated yet.</p>
+                      )}
+                    </ScrollArea>
+                  </div>
+                </div>
+              </DialogContent>
+            </Dialog>
+
+            <Dialog open={isBuyerMappingOpen} onOpenChange={setIsBuyerMappingOpen}>
+              <DialogTrigger asChild>
+                <Button variant="outline" size="sm" className="text-xs sm:text-sm">
+                  <FileText className="w-3 h-3 sm:w-4 sm:h-4 mr-1 sm:mr-2" />
+                  Buyer Mapping
+                </Button>
+              </DialogTrigger>
+              <DialogContent className="sm:max-w-[520px]">
+                <DialogHeader>
+                  <DialogTitle className="font-display text-xl">Buyer Mapping</DialogTitle>
+                </DialogHeader>
+                <div className="space-y-4">
+                  <p className="text-sm text-muted-foreground">{buyerStatus}</p>
+                  <Progress value={buyerProgress} className="h-2" />
+                  <p className="text-xs text-muted-foreground">{Math.round(buyerProgress)}%</p>
+                </div>
+              </DialogContent>
+            </Dialog>
+
             <Dialog open={isCreateFolderOpen} onOpenChange={setIsCreateFolderOpen}>
               <DialogTrigger asChild>
                 <Button variant="outline" size="sm" className="text-xs sm:text-sm">
@@ -1548,5 +2481,45 @@ export default function VaultDetail() {
         </DialogContent>
       </Dialog>
     </DashboardLayout>
+  );
+}
+
+class VaultDetailErrorBoundary extends React.Component<
+  { children: React.ReactNode },
+  { error: Error | null }
+> {
+  constructor(props: { children: React.ReactNode }) {
+    super(props);
+    this.state = { error: null };
+  }
+
+  static getDerivedStateFromError(error: Error) {
+    return { error };
+  }
+
+  componentDidCatch(error: Error, info: React.ErrorInfo) {
+    console.error('VaultDetail crash:', error, info);
+  }
+
+  render() {
+    if (this.state.error) {
+      return (
+        <DashboardLayout>
+          <div className="rounded-lg border border-destructive/30 bg-destructive/10 p-4 text-sm text-destructive">
+            <p className="font-semibold">VaultDetail failed to render.</p>
+            <p className="mt-2 break-words">{this.state.error.message}</p>
+          </div>
+        </DashboardLayout>
+      );
+    }
+    return this.props.children;
+  }
+}
+
+export default function VaultDetail() {
+  return (
+    <VaultDetailErrorBoundary>
+      <VaultDetailInner />
+    </VaultDetailErrorBoundary>
   );
 }

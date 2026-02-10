@@ -1,15 +1,13 @@
 import { fetchAllFilesFromVault } from '../fraud/documentFetcher';
 import { CIMReport } from './types';
-import { createClient } from '@supabase/supabase-js';
-
-const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
-const supabaseKey = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY;
-const supabase = createClient(supabaseUrl, supabaseKey);
+import { supabase } from '@/integrations/supabase/client';
 
 export async function runCIMGeneration(
   vaultId: string,
   vaultName: string,
-  userId: string
+  userId: string,
+  signal?: AbortSignal, // ✅ NEW: Accept abort signal for cancellation
+  runId?: string
 ): Promise<CIMReport> {
   try {
     console.log(`Starting CIM Generation for vault: ${vaultId} (${vaultName})`);
@@ -50,7 +48,8 @@ export async function runCIMGeneration(
 
     console.log('Step 2: Sending documents to CIM backend for generation...');
 
-    const cimResponse = await fetch('http://localhost:3003/api/cim-generation', {
+    const cimBackendUrl = import.meta.env.VITE_CIM_BACKEND_URL || 'http://localhost:3003';
+    const cimResponse = await fetch(`${cimBackendUrl.replace(/\/$/, '')}/api/cim-generation`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -58,11 +57,15 @@ export async function runCIMGeneration(
         vaultId,
         vaultName,
         userId,
+        runId,
       }),
+      signal, // ✅ NEW: Pass the abort signal to fetch
     });
 
     if (!cimResponse.ok) {
-      throw new Error(`CIM API failed: ${cimResponse.statusText}`);
+      const errorText = await cimResponse.text().catch(() => '');
+      const statusInfo = cimResponse.status ? `HTTP ${cimResponse.status}` : 'HTTP error';
+      throw new Error(`CIM API failed: ${statusInfo} ${errorText}`.trim());
     }
 
     const { cimReport, filesAnalyzed } = await cimResponse.json();
