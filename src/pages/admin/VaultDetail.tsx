@@ -167,9 +167,15 @@ function VaultDetailInner() {
   const cimProgressTimerRef = useRef<number | null>(null);
   const cimStartedAtRef = useRef<number | null>(null);
   const cimAbortControllerRef = useRef<AbortController | null>(null);
+  const cimRunIdRef = useRef<string | null>(null);
   const cimHtml = useMemo(() => {
     const raw = cimReport?.cimReport;
-    return typeof raw === 'string' ? raw : '';
+    if (typeof raw !== 'string') return '';
+    // Scope CIM styles to prevent leaking (body { background: white } was turning page white)
+    return raw.replace(/<style([^>]*)>([\s\S]*?)<\/style>/gi, (_, attrs, content) => {
+      const scoped = content.replace(/\bbody\b/g, '#cim-report-content');
+      return `<style${attrs}>${scoped}</style>`;
+    });
   }, [cimReport?.cimReport]);
   const cimBackendUrl = useMemo(() => {
     const raw = import.meta.env.VITE_CIM_BACKEND_URL || 'http://localhost:3003';
@@ -215,7 +221,14 @@ function VaultDetailInner() {
         .order('created_at', { ascending: false })
         .limit(1)
         .maybeSingle();
-      if (error || !data) return;
+      if (error) {
+        setCimReport(null);
+        return;
+      }
+      if (!data) {
+        setCimReport(null);
+        return;
+      }
       const reportContent = typeof data.report_content === 'string'
         ? data.report_content
         : data.report_content
@@ -1654,14 +1667,15 @@ function VaultDetailInner() {
   }, []);
 
   const pollCimStatus = useCallback(async () => {
-    if (!vaultId) return;
+    const currentRunId = cimRunIdRef.current;
+    if (!vaultId || !currentRunId) return;
     try {
-      const res = await fetch(`${cimBackendUrl}/api/cim-status?vaultId=${encodeURIComponent(vaultId)}`);
+      const res = await fetch(`${cimBackendUrl}/api/cim-status?vaultId=${encodeURIComponent(vaultId)}&runId=${encodeURIComponent(currentRunId)}`);
       if (!res.ok) return;
       const status = await res.json();
-      if (cimRunId && status?.runId && status.runId !== cimRunId) {
-        return;
-      }
+      // Only accept status for our current run - ignore stale/cached status from previous runs
+      if (status?.runId && status.runId !== currentRunId) return;
+      if (!status?.runId) return; // Backend didn't return runId - reject to avoid stale 100%
       if (typeof status?.progress === 'number') {
         setCimProgress(Math.min(100, Math.max(0, status.progress)));
       }
@@ -1674,9 +1688,9 @@ function VaultDetailInner() {
         stopCimProgressTimer();
       }
     } catch {
-      // ignore polling failures
+      // ignore polling failures (e.g. 404 if backend has no status endpoint)
     }
-  }, [vaultId, cimBackendUrl, stopCimProgressTimer, cimRunId]);
+  }, [vaultId, cimBackendUrl, stopCimProgressTimer]);
 
   const downloadCimPdf = useCallback(async (report: CIMReport) => {
     if (!cimPreviewRef.current) return;
@@ -1699,6 +1713,7 @@ function VaultDetailInner() {
     setCimError(null);
     setCimIsRunning(true);
     const runId = `${Date.now()}`;
+    cimRunIdRef.current = runId;
     setCimRunId(runId);
     setCimProgress(10);
     setCimEtaSeconds(null);
@@ -1708,17 +1723,19 @@ function VaultDetailInner() {
     pollCimStatus();
 
     try {
-      cimAbortControllerRef.current = new AbortController();  // ✅ ADD THIS
-      const report = await runCIMGeneration(vaultId, vault.name, user.id, cimAbortControllerRef.current.signal, runId);  // ✅ UPDATED
+      cimAbortControllerRef.current = new AbortController();
+      const report = await runCIMGeneration(vaultId, vault.name, user.id, cimAbortControllerRef.current.signal, runId);
       setCimReport(report);
       setCimProgress(100);
       setCimEtaSeconds(null);
+      cimRunIdRef.current = null;
       stopCimProgressTimer();
       setTimeout(() => {
         downloadCimPdf(report);
       }, 300);
     } catch (e: any) {
       setCimError(e?.message || 'Failed to generate CIM');
+      cimRunIdRef.current = null;
       stopCimProgressTimer();
       setCimProgress(0);
       setCimEtaSeconds(null);
@@ -1730,6 +1747,7 @@ function VaultDetailInner() {
     if (cimAbortControllerRef.current) {
       console.log('Stopping CIM generation...');
       cimAbortControllerRef.current.abort();
+      cimRunIdRef.current = null;
       setCimIsRunning(false);
       setCimError('CIM generation was cancelled');
       setCimProgress(0);
@@ -1737,11 +1755,6 @@ function VaultDetailInner() {
       stopCimProgressTimer();
     }
   }, [stopCimProgressTimer]);
-  const regenerateCim = useCallback(async () => {
-    setCimReport(null);
-    await startCimGeneration();
-  }, [startCimGeneration]);
-
   useEffect(() => {
     return () => {
       stopCimProgressTimer();
@@ -1752,6 +1765,16 @@ function VaultDetailInner() {
     if (!isCimDialogOpen) return;
     loadLatestCim();
   }, [isCimDialogOpen, loadLatestCim]);
+
+  // Prevent CIM dialog styles from turning page background white
+  useEffect(() => {
+    if (!isCimDialogOpen) return;
+    const prev = document.body.style.background;
+    document.body.style.background = 'hsl(var(--background))';
+    return () => {
+      document.body.style.background = prev;
+    };
+  }, [isCimDialogOpen]);
 
   useEffect(() => {
     if (!isBuyerMappingOpen) return;
@@ -1978,7 +2001,7 @@ function VaultDetailInner() {
                   Generate CIM
                 </Button>
               </DialogTrigger>
-              <DialogContent className="sm:max-w-[900px] max-h-[90vh] flex flex-col overflow-hidden">
+              <DialogContent className="sm:max-w-[900px] max-h-[90vh] flex flex-col overflow-hidden bg-card border-gold/20">
                 <DialogHeader>
                   <div className="flex items-center justify-between gap-3">
                     <div>
@@ -2000,33 +2023,25 @@ function VaultDetailInner() {
                       </div>
                       <div className="flex items-center gap-2 flex-shrink-0">
                         <Button
-                          variant="gold"
+                          variant="outline"
                           size="sm"
                           onClick={startCimGeneration}
                           disabled={cimIsRunning}
                         >
-                          {cimIsRunning ? 'Generating...' : 'Start'}
+                          {cimIsRunning ? 'Generating...' : cimReport ? 'Generate new' : 'Start'}
                         </Button>
                         {cimIsRunning && (
                           <Button
                             variant="destructive"
                             size="sm"
                             onClick={handleStopCim}
-                            title="Click to stop the CIM generation"
+                            title="Stop and terminate CIM generation"
                           >
-                            ⏹️ Stop
+                            Stop
                           </Button>
                         )}
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={regenerateCim}
-                          disabled={cimIsRunning}
-                        >
-                          Regenerate
-                        </Button>
-                        <Button
-                          variant="outline"
+                                        <Button
+                          variant="gold"
                           size="sm"
                           onClick={() => cimReport && downloadCimPdf(cimReport)}
                           disabled={!cimReport}
@@ -2053,17 +2068,17 @@ function VaultDetailInner() {
                     </div>
                   </div>
 
-                  <div className="rounded-lg border border-gold/10 overflow-hidden flex-1 min-h-0">
+                  <div className="rounded-lg border border-gold/10 overflow-hidden flex-1 min-h-0 min-w-0">
                     <div className="px-3 py-2 border-b border-gold/10 bg-muted/5">
                       <p className="text-sm font-medium text-foreground">CIM Preview</p>
                       <p className="text-xs text-muted-foreground">Preview updates after generation.</p>
                     </div>
-                    <ScrollArea className="h-[45vh] p-3 max-w-full overflow-hidden bg-white">
+                    <ScrollArea className="h-[45vh] p-3 max-w-full overflow-hidden rounded-b-lg">
                       {cimReport ? (
                         <div
                           ref={cimPreviewRef}
                           id="cim-report-content"
-                          className="max-w-none text-slate-800"
+                          className="max-w-none text-slate-800 bg-white rounded p-4 min-h-[200px]"
                           dangerouslySetInnerHTML={{ __html: cimHtml }}
                         />
                       ) : (

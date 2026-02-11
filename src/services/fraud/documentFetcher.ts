@@ -34,28 +34,33 @@ export async function fetchAllFilesFromVault(vaultId: string): Promise<DocumentF
       return [];
     }
 
-    console.log(`Found ${documents.length} documents, downloading...`);
+    console.log(`Found ${documents.length} documents, downloading in parallel...`);
 
-    // Download each file
-    const files: DocumentFile[] = [];
-    for (const doc of documents) {
-      try {
+    // Download all files in parallel for faster fetching
+    const results = await Promise.allSettled(
+      documents.map(async (doc) => {
         const fileContent = await downloadFileContent(doc.file_path);
-        files.push({
+        return {
           name: doc.name,
           path: doc.file_path,
           size: doc.file_size || 0,
           type: doc.file_type || 'unknown',
           lastModified: doc.created_at,
           content: fileContent,
-        });
-        console.log(`✓ Downloaded: ${doc.name}`);
-      } catch (err) {
-        console.warn(`✗ Failed to download ${doc.name}:`, err);
-      }
-    }
+        };
+      })
+    );
 
-    console.log(`Successfully downloaded ${files.length} files`);
+    const files: DocumentFile[] = [];
+    results.forEach((result, i) => {
+      if (result.status === 'fulfilled') {
+        files.push(result.value);
+      } else {
+        console.warn(`✗ Failed to download ${documents[i]?.name}:`, result.reason);
+      }
+    });
+
+    console.log(`Successfully downloaded ${files.length}/${documents.length} files`);
     return files;
   } catch (error) {
     console.error('Error fetching files from vault:', error);

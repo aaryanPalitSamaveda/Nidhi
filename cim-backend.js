@@ -19,9 +19,20 @@ app.use(cors());
 app.use(express.json({ limit: '200mb' }));
 app.use(express.urlencoded({ limit: '200mb', extended: true }));
 
+// In-memory status for CIM generation (per runId) - prevents stale 100% from previous runs
+const cimStatusStore = new Map();
+
+app.get('/api/cim-status', (req, res) => {
+  const { runId } = req.query;
+  if (!runId) return res.status(400).json({ error: 'runId required' });
+  const status = cimStatusStore.get(runId);
+  if (!status) return res.json({ runId, progress: 10, status: 'running' });
+  res.json(status);
+});
+
 app.post('/api/cim-generation', async (req, res) => {
   try {
-    const { documents, vaultName } = req.body;
+    const { documents, vaultName, vaultId, runId } = req.body;
 
     if (!documents || documents.length === 0) {
       return res.status(400).json({ error: 'No documents provided' });
@@ -36,20 +47,16 @@ app.post('/api/cim-generation', async (req, res) => {
     console.log(`Processing: ${documents.length} files`);
     console.log(`${'='.repeat(70)}\n`);
 
-    console.log('STEP 1: EXTRACTING DOCUMENT DATA\n');
-    const extractedData = [];
-    let successCount = 0;
-    let errorCount = 0;
+    if (runId) {
+      cimStatusStore.set(runId, { runId, progress: 10, status: 'running', etaSeconds: null });
+    }
 
-    for (let i = 0; i < documents.length; i++) {
-      const doc = documents[i];
+    console.log('STEP 1: EXTRACTING DOCUMENT DATA (parallel)\n');
+
+    const extractOne = async (doc, i) => {
       try {
-        const progressBar = `[${'█'.repeat(Math.floor(i / documents.length * 20))}${'░'.repeat(20 - Math.floor(i / documents.length * 20))}]`;
-        console.log(`${progressBar} [${i + 1}/${documents.length}] ${doc.fileName}`);
-
         const buffer = Buffer.from(doc.content, 'base64');
         const fileType = getFileType(doc.fileName);
-
         let extractedText = '';
         let extractionMethod = '';
 
@@ -57,7 +64,6 @@ app.post('/api/cim-generation', async (req, res) => {
           if (fileType === 'pdf') {
             extractedText = await parsePDFText(buffer);
             extractionMethod = 'PDF-Text';
-
             if (!extractedText || extractedText.trim().length < 50) {
               extractedText = await parsePDFPlain(buffer);
               extractionMethod = 'PDF-Plain';
@@ -89,34 +95,44 @@ app.post('/api/cim-generation', async (req, res) => {
           extractedText = `[No content extracted]`;
         }
 
-        // ✅ FIXED: Reduced from 8000 to 3000 characters
-        extractedData.push({
+        return {
           fileName: doc.fileName,
           fileType: doc.fileType,
           extracted: extractedText.substring(0, 3000),
           method: extractionMethod,
-        });
-
-        successCount++;
-        console.log(`     ✅ [${extractionMethod}]`);
-
+          ok: true,
+        };
       } catch (error) {
-        errorCount++;
-        console.error(`     ❌ ${error.message}`);
-        extractedData.push({
+        return {
           fileName: doc.fileName,
           fileType: doc.fileType,
           extracted: `[ERROR: ${error.message}]`,
           method: 'Error',
-        });
+          ok: false,
+        };
       }
-    }
+    };
+
+    const results = await Promise.all(documents.map((doc, i) => extractOne(doc, i)));
+    const extractedData = results.map((r) => ({
+      fileName: r.fileName,
+      fileType: r.fileType,
+      extracted: r.extracted,
+      method: r.method,
+    }));
+    const successCount = results.filter((r) => r.ok).length;
+    const errorCount = results.length - successCount;
 
     console.log(`\n✅ Extracted: ${successCount}/${documents.length}`);
     console.log(`❌ Errors: ${errorCount}/${documents.length}\n`);
 
+    if (runId) {
+      cimStatusStore.set(runId, { runId, progress: 50, status: 'running', etaSeconds: 120 });
+    }
+
     console.log('STEP 2: GENERATING CIM SECTIONS WITH CLAUDE\n');
-    console.log(`📤 Sending prompt to Claude (approx ${Math.round(extractedData.join('').length / 1000)}KB)...`);
+    const totalChars = extractedData.reduce((sum, d) => sum + (d.extracted?.length || 0), 0);
+    console.log(`📤 Sending prompt to Claude (approx ${Math.round(totalChars / 1000)}KB)...`);
 
     const prompt = `You are a professional investment banking analyst. Generate a comprehensive Confidential Information Memorandum (CIM) in HTML format.
 
@@ -1010,6 +1026,11 @@ hr {
       console.log(`Report size: ${Math.round(cimReport.length / 1000)}KB`);
       console.log(`${'='.repeat(70)}\n`);
 
+      if (runId) {
+        cimStatusStore.set(runId, { runId, progress: 100, status: 'completed', etaSeconds: null });
+        setTimeout(() => cimStatusStore.delete(runId), 60000);
+      }
+
       res.json({
         cimReport,
         vaultName,
@@ -1021,6 +1042,10 @@ hr {
         timestamp: new Date().toISOString(),
       });
     } catch (claudeError) {
+      if (runId) {
+        cimStatusStore.set(runId, { runId, progress: 0, status: 'failed', etaSeconds: null });
+        setTimeout(() => cimStatusStore.delete(runId), 60000);
+      }
       console.error('\n❌ CLAUDE API ERROR:');
       console.error(`Error Type: ${claudeError.constructor.name}`);
       console.error(`Error Message: ${claudeError.message}`);
@@ -1036,6 +1061,11 @@ hr {
     }
 
   } catch (error) {
+    const runId = req.body?.runId;
+    if (runId) {
+      cimStatusStore.set(runId, { runId, progress: 0, status: 'failed', etaSeconds: null });
+      setTimeout(() => cimStatusStore.delete(runId), 60000);
+    }
     console.error('\n❌ REQUEST ERROR:');
     console.error(`Error: ${error.message}`);
     console.error(`Stack: ${error.stack}`);

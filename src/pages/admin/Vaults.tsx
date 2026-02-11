@@ -1,5 +1,3 @@
-import { CIMGenerationPanel } from '../../components/CIMGenerationPanel';
-import { FraudAnalysisPanel } from '../../components/FraudAnalysisPanel';
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { DashboardLayout } from '@/components/layout/DashboardLayout';
@@ -672,12 +670,6 @@ export default function AdminVaults() {
           </div>
         </DialogContent>
       </Dialog>
-      <div className="mt-12">
-        <FraudAnalysisPanel />
-      </div>
-      <div className="mt-12">
-        <CIMGenerationPanel />
-      </div>
     </DashboardLayout>
   );
 }
