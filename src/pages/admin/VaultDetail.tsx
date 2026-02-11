@@ -2332,7 +2332,6 @@ function VaultDetailInner() {
                             variant="destructive"
                             size="sm"
                             onClick={stopAudit}
-                            disabled={auditIsRunning}
                           >
                             Stop
                           </Button>
