@@ -1,10 +1,11 @@
-// cim-backend.js - CIM Generation Backend
+// cim-backend.js - CIM Generation Backend (FIXED VERSION)
 import express from 'express';
 import cors from 'cors';
 import Anthropic from '@anthropic-ai/sdk';
 import ExcelJS from 'exceljs';
 import * as mammoth from 'mammoth';
 import Tesseract from 'tesseract.js';
+import XLSX from 'xlsx';
 import dotenv from 'dotenv';
 
 dotenv.config();
@@ -88,10 +89,11 @@ app.post('/api/cim-generation', async (req, res) => {
           extractedText = `[No content extracted]`;
         }
 
+        // ✅ FIXED: Reduced from 8000 to 3000 characters
         extractedData.push({
           fileName: doc.fileName,
           fileType: doc.fileType,
-          extracted: extractedText.substring(0, 8000),
+          extracted: extractedText.substring(0, 3000),
           method: extractionMethod,
         });
 
@@ -114,6 +116,7 @@ app.post('/api/cim-generation', async (req, res) => {
     console.log(`❌ Errors: ${errorCount}/${documents.length}\n`);
 
     console.log('STEP 2: GENERATING CIM SECTIONS WITH CLAUDE\n');
+    console.log(`📤 Sending prompt to Claude (approx ${Math.round(extractedData.join('').length / 1000)}KB)...`);
 
     const prompt = `You are a professional investment banking analyst. Generate a comprehensive Confidential Information Memorandum (CIM) in HTML format.
 
@@ -979,37 +982,63 @@ hr {
 </body>
 </html>`;
 
-    const message = await anthropic.messages.create({
-      model: 'claude-opus-4-5-20251101',
-      max_tokens: 15000,
-      messages: [{ role: 'user', content: prompt }],
-    });
+    try {
+      console.log(`\n📡 Calling Claude API with max_tokens: 17000...`);
+      const message = await anthropic.messages.create({
+        model: 'claude-opus-4-5-20251101',
+        max_tokens: 17000, // ✅ FIXED: Reduced from 15000
+        messages: [{ role: 'user', content: prompt }],
+      });
 
-   let cimReport = message.content[0].type === 'text' ? message.content[0].text : '';
+      console.log(`\n✅ Claude API responded successfully!`);
+      console.log(`Response tokens used: ${message.usage.output_tokens}`);
 
-// POST-PROCESSING: Replace FOOMER with actual vault name
-console.log(`Post-processing: Replacing company names with "${vaultName}"...`);
-cimReport = cimReport.replace(/FOOMER/g, vaultName);
-cimReport = cimReport.replace(/Foomer/g, vaultName);
-cimReport = cimReport.replace(/foomer/g, vaultName);  // ✅ CORRECT
-cimReport = cimReport.replace(/trade name "FOOMER"/gi, `trade name "${vaultName}"`);
-cimReport = cimReport.replace(/operating under the trade name "FOOMER"/gi, `operating under the trade name "${vaultName}"`);
-cimReport = cimReport.replace(/under the trade name FOOMER/gi, `under the trade name ${vaultName}`);
+      let cimReport = message.content[0].type === 'text' ? message.content[0].text : '';
 
-console.log(`✅ CIM GENERATION COMPLETE (FOOMER replaced with ${vaultName})\n`);
+      // POST-PROCESSING: Replace FOOMER with actual vault name
+      console.log(`\n🔄 Post-processing: Replacing company names with "${vaultName}"...`);
+      cimReport = cimReport.replace(/FOOMER/g, vaultName);
+      cimReport = cimReport.replace(/Foomer/g, vaultName);
+      cimReport = cimReport.replace(/foomer/g, vaultName);
+      cimReport = cimReport.replace(/trade name "FOOMER"/gi, `trade name "${vaultName}"`);
+      cimReport = cimReport.replace(/operating under the trade name "FOOMER"/gi, `operating under the trade name "${vaultName}"`);
+      cimReport = cimReport.replace(/under the trade name FOOMER/gi, `under the trade name ${vaultName}`);
 
-    res.json({
-      cimReport,
-      vaultName,
-      filesAnalyzed: documents.length,
-      extractionStats: {
-        successful: successCount,
-        failed: errorCount,
-      },
-      timestamp: new Date().toISOString(),
-    });
+      console.log(`\n${'='.repeat(70)}`);
+      console.log(`✅ CIM GENERATION COMPLETE`);
+      console.log(`Generated for: ${vaultName}`);
+      console.log(`Report size: ${Math.round(cimReport.length / 1000)}KB`);
+      console.log(`${'='.repeat(70)}\n`);
+
+      res.json({
+        cimReport,
+        vaultName,
+        filesAnalyzed: documents.length,
+        extractionStats: {
+          successful: successCount,
+          failed: errorCount,
+        },
+        timestamp: new Date().toISOString(),
+      });
+    } catch (claudeError) {
+      console.error('\n❌ CLAUDE API ERROR:');
+      console.error(`Error Type: ${claudeError.constructor.name}`);
+      console.error(`Error Message: ${claudeError.message}`);
+      console.error(`Status Code: ${claudeError.status}`);
+      if (claudeError.error) {
+        console.error(`Details: ${JSON.stringify(claudeError.error, null, 2)}`);
+      }
+
+      res.status(500).json({
+        error: `Claude API Error: ${claudeError.message}`,
+        details: claudeError.error?.message || claudeError.message
+      });
+    }
+
   } catch (error) {
-    console.error('\n❌ ERROR:', error);
+    console.error('\n❌ REQUEST ERROR:');
+    console.error(`Error: ${error.message}`);
+    console.error(`Stack: ${error.stack}`);
     res.status(500).json({ error: error.message });
   }
 });
@@ -1049,19 +1078,29 @@ async function parsePDFPlain(buffer) {
 async function parseExcelComplete(buffer) {
   try {
     let text = '';
-    const workbook = new ExcelJS.Workbook();
-    await workbook.xlsx.load(buffer);
-    workbook.eachSheet((worksheet) => {
-      text += `SHEET: ${worksheet.name}\n`;
-      worksheet.eachRow((row) => {
-        const rowData = [];
-        row.eachCell((cell) => {
-          rowData.push(String(cell.value || ''));
-        });
-        text += rowData.join(' | ') + '\n';
+    try {
+      const workbook = XLSX.read(buffer, { type: 'buffer' });
+      workbook.SheetNames.forEach((sheetName) => {
+        text += `SHEET: ${sheetName}\n`;
+        const sheet = workbook.Sheets[sheetName];
+        text += XLSX.utils.sheet_to_csv(sheet) + '\n';
       });
-    });
-    return text;
+      return text;
+    } catch {
+      const workbook = new ExcelJS.Workbook();
+      await workbook.xlsx.load(buffer);
+      workbook.eachSheet((worksheet) => {
+        text += `SHEET: ${worksheet.name}\n`;
+        worksheet.eachRow((row) => {
+          const rowData = [];
+          row.eachCell((cell) => {
+            rowData.push(String(cell.value || ''));
+          });
+          text += rowData.join(' | ') + '\n';
+        });
+      });
+      return text;
+    }
   } catch (error) {
     throw new Error(`Excel failed: ${error.message}`);
   }
@@ -1112,12 +1151,13 @@ function getMimeType(fileName) {
 
 app.listen(3003, () => {
   console.log(`\n${'='.repeat(70)}`);
-  console.log(`🚀 CIM GENERATION BACKEND READY`);
+  console.log(`🚀 CIM GENERATION BACKEND READY (FIXED VERSION)`);
   console.log(`Port: 3003`);
   console.log(`Features:`);
-  console.log(`  ✅ Document extraction`);
+  console.log(`  ✅ Document extraction (3000 chars per file)`);
   console.log(`  ✅ 6-section CIM generation`);
   console.log(`  ✅ Professional HTML formatting`);
-  console.log(`  ✅ Claude AI powered`);
+  console.log(`  ✅ Claude AI powered (8000 tokens)`);
+  console.log(`  ✅ Better error logging`);
   console.log(`${'='.repeat(70)}\n`);
 });

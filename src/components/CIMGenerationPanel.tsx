@@ -1,6 +1,6 @@
-import React, { useState } from 'react';
-import { runCIMGeneration, getFormattedCIM } from '../services/cim/cimGenerationController';
-import { CIMReport } from '../services/cim/types';
+import React, { useState, useRef } from 'react';
+import { runCIMGeneration, getFormattedCIM } from '@/services/CIM/cimGenerationController';
+import type { CIMReport } from '@/services/CIM/types';
 
 export const CIMGenerationPanel: React.FC = () => {
   const [vaultId, setVaultId] = useState('c9f09380-7010-476b-8c9c-df9f4f74d9ff');
@@ -10,23 +10,51 @@ export const CIMGenerationPanel: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [progress, setProgress] = useState('');
 
+  // ✅ NEW: Store abort controller to cancel requests
+  const abortControllerRef = useRef<AbortController | null>(null);
+
   const handleRunCIM = async () => {
     setLoading(true);
     setError(null);
     setProgress('Starting CIM generation...');
 
+    // ✅ NEW: Create abort controller for this request
+    abortControllerRef.current = new AbortController();
+
     try {
       const userId = localStorage.getItem('userId') || 'unknown-user';
-      const cimReport = await runCIMGeneration(vaultId, vaultName, userId);
+      const cimReport = await runCIMGeneration(
+        vaultId,
+        vaultName,
+        userId,
+        abortControllerRef.current.signal // ✅ NEW: Pass the signal
+      );
       setReport(cimReport);
       setProgress('CIM generation complete!');
     } catch (err) {
-      const errorMessage = err instanceof Error ? err.message : 'Unknown error occurred';
-      setError(errorMessage);
-      setProgress('');
+      // ✅ NEW: Handle abort error separately
+      if (err instanceof Error && err.name === 'AbortError') {
+        setError('CIM generation was cancelled');
+        setProgress('Cancelled');
+      } else {
+        const errorMessage = err instanceof Error ? err.message : 'Unknown error occurred';
+        setError(errorMessage);
+        setProgress('');
+      }
       console.error('CIM generation error:', err);
     } finally {
       setLoading(false);
+      abortControllerRef.current = null;
+    }
+  };
+
+  // ✅ NEW: Handle stop/cancel button
+  const handleStopCIM = () => {
+    if (abortControllerRef.current) {
+      console.log('Stopping CIM generation...');
+      abortControllerRef.current.abort();
+      setLoading(false);
+      setProgress('Stopping CIM generation...');
     }
   };
 
@@ -109,7 +137,7 @@ export const CIMGenerationPanel: React.FC = () => {
   return (
     <div className="p-6 bg-gradient-to-br from-slate-900 to-slate-800 rounded-lg border border-blue-500/20">
       <div className="mb-6">
-        <h2 className="text-2xl font-bold text-blue-500 mb-4">📄 CIM Report Generation</h2>
+        <h2 className="text-2xl font-bold text-blue-500 mb-4">📊 CIM Report Generation</h2>
 
         <div className="space-y-4">
           <div>
@@ -120,7 +148,8 @@ export const CIMGenerationPanel: React.FC = () => {
               type="text"
               value={vaultName}
               onChange={(e) => setVaultName(e.target.value)}
-              className="w-full px-4 py-2 bg-slate-800 border border-blue-500/30 rounded text-white placeholder-gray-500 focus:border-blue-500 focus:outline-none"
+              disabled={loading} // ✅ NEW: Disable while loading
+              className="w-full px-4 py-2 bg-slate-800 border border-blue-500/30 rounded text-white placeholder-gray-500 focus:border-blue-500 focus:outline-none disabled:opacity-50"
               placeholder="Enter company/vault name"
             />
             <p className="text-xs text-gray-400 mt-1">This will appear as the company name in the report</p>
@@ -134,22 +163,37 @@ export const CIMGenerationPanel: React.FC = () => {
               type="text"
               value={vaultId}
               onChange={(e) => setVaultId(e.target.value)}
-              className="w-full px-4 py-2 bg-slate-800 border border-blue-500/30 rounded text-white placeholder-gray-500 focus:border-blue-500 focus:outline-none"
+              disabled={loading} // ✅ NEW: Disable while loading
+              className="w-full px-4 py-2 bg-slate-800 border border-blue-500/30 rounded text-white placeholder-gray-500 focus:border-blue-500 focus:outline-none disabled:opacity-50"
               placeholder="Enter vault ID"
             />
           </div>
 
-          <button
-            onClick={handleRunCIM}
-            disabled={loading}
-            className={`w-full py-3 rounded font-semibold transition ${
-              loading
-                ? 'bg-gray-600 cursor-not-allowed'
-                : 'bg-blue-600 hover:bg-blue-700 text-white'
-            }`}
-          >
-            {loading ? '⏳ Generating CIM Report...' : '📊 Generate CIM Report'}
-          </button>
+          {/* ✅ NEW: Show either Generate or Stop button based on loading state */}
+          <div className="flex gap-3">
+            <button
+              onClick={handleRunCIM}
+              disabled={loading}
+              className={`flex-1 py-3 rounded font-semibold transition ${
+                loading
+                  ? 'bg-gray-600 cursor-not-allowed'
+                  : 'bg-blue-600 hover:bg-blue-700 text-white'
+              }`}
+            >
+              {loading ? '⏳ Generating CIM Report...' : '📊 Generate CIM Report'}
+            </button>
+
+            {/* ✅ NEW: Stop button appears only while loading */}
+            {loading && (
+              <button
+                onClick={handleStopCIM}
+                className="py-3 px-6 rounded font-semibold bg-red-600 hover:bg-red-700 text-white transition"
+                title="Click to stop the CIM generation"
+              >
+                ⏹️ Stop
+              </button>
+            )}
+          </div>
 
           {progress && (
             <div className="p-3 bg-blue-500/20 border border-blue-500 rounded text-blue-200 text-sm">

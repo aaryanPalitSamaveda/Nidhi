@@ -5,6 +5,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import ExcelJS from 'exceljs';
 import * as mammoth from 'mammoth';
 import Tesseract from 'tesseract.js';
+import XLSX from 'xlsx';
 import dotenv from 'dotenv';
 
 dotenv.config();
@@ -257,19 +258,29 @@ async function parsePDFPlain(buffer) {
 async function parseExcelComplete(buffer) {
   try {
     let text = '';
-    const workbook = new ExcelJS.Workbook();
-    await workbook.xlsx.load(buffer);
-    workbook.eachSheet((worksheet) => {
-      text += `SHEET: ${worksheet.name}\n`;
-      worksheet.eachRow((row) => {
-        const rowData = [];
-        row.eachCell((cell) => {
-          rowData.push(String(cell.value || ''));
-        });
-        text += rowData.join(' | ') + '\n';
+    try {
+      const workbook = XLSX.read(buffer, { type: 'buffer' });
+      workbook.SheetNames.forEach((sheetName) => {
+        text += `SHEET: ${sheetName}\n`;
+        const sheet = workbook.Sheets[sheetName];
+        text += XLSX.utils.sheet_to_csv(sheet) + '\n';
       });
-    });
-    return text;
+      return text;
+    } catch {
+      const workbook = new ExcelJS.Workbook();
+      await workbook.xlsx.load(buffer);
+      workbook.eachSheet((worksheet) => {
+        text += `SHEET: ${worksheet.name}\n`;
+        worksheet.eachRow((row) => {
+          const rowData = [];
+          row.eachCell((cell) => {
+            rowData.push(String(cell.value || ''));
+          });
+          text += rowData.join(' | ') + '\n';
+        });
+      });
+      return text;
+    }
   } catch (error) {
     throw new Error(`Excel failed: ${error.message}`);
   }

@@ -6,6 +6,7 @@ export async function runCIMGeneration(
   vaultId: string,
   vaultName: string,
   userId: string,
+  signal?: AbortSignal, // ✅ NEW: Accept abort signal for cancellation
   runId?: string
 ): Promise<CIMReport> {
   try {
@@ -58,6 +59,7 @@ export async function runCIMGeneration(
         userId,
         runId,
       }),
+      signal, // ✅ NEW: Pass the abort signal to fetch
     });
 
     if (!cimResponse.ok) {

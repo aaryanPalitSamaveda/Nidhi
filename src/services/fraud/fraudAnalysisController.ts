@@ -3,7 +3,11 @@
 import { fetchAllFilesFromVault } from './documentFetcher';
 import { formatReportForDisplay, generateReportJSON } from './reportGenerator';
 import { FraudAnalysisReport } from './types';
-import { supabase } from '@/integrations/supabase/client';
+import { createClient } from '@supabase/supabase-js';
+
+const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
+const supabaseKey = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY;
+const supabase = createClient(supabaseUrl, supabaseKey);
 
 export async function runFraudAnalysis(vaultId: string, userId: string): Promise<FraudAnalysisReport> {
   try {

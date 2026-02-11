@@ -166,6 +166,7 @@ function VaultDetailInner() {
   const cimPreviewRef = useRef<HTMLDivElement>(null);
   const cimProgressTimerRef = useRef<number | null>(null);
   const cimStartedAtRef = useRef<number | null>(null);
+  const cimAbortControllerRef = useRef<AbortController | null>(null);
   const cimHtml = useMemo(() => {
     const raw = cimReport?.cimReport;
     return typeof raw === 'string' ? raw : '';
@@ -1707,7 +1708,8 @@ function VaultDetailInner() {
     pollCimStatus();
 
     try {
-      const report = await runCIMGeneration(vaultId, vault.name, user.id, runId);
+      cimAbortControllerRef.current = new AbortController();  // ✅ ADD THIS
+      const report = await runCIMGeneration(vaultId, vault.name, user.id, cimAbortControllerRef.current.signal, runId);  // ✅ UPDATED
       setCimReport(report);
       setCimProgress(100);
       setCimEtaSeconds(null);
@@ -1724,7 +1726,17 @@ function VaultDetailInner() {
       setCimIsRunning(false);
     }
   }, [vaultId, vault, user, stopCimProgressTimer, downloadCimPdf, pollCimStatus]);
-
+  const handleStopCim = useCallback(() => {
+    if (cimAbortControllerRef.current) {
+      console.log('Stopping CIM generation...');
+      cimAbortControllerRef.current.abort();
+      setCimIsRunning(false);
+      setCimError('CIM generation was cancelled');
+      setCimProgress(0);
+      setCimEtaSeconds(null);
+      stopCimProgressTimer();
+    }
+  }, [stopCimProgressTimer]);
   const regenerateCim = useCallback(async () => {
     setCimReport(null);
     await startCimGeneration();
@@ -1995,6 +2007,16 @@ function VaultDetailInner() {
                         >
                           {cimIsRunning ? 'Generating...' : 'Start'}
                         </Button>
+                        {cimIsRunning && (
+                          <Button
+                            variant="destructive"
+                            size="sm"
+                            onClick={handleStopCim}
+                            title="Click to stop the CIM generation"
+                          >
+                            ⏹️ Stop
+                          </Button>
+                        )}
                         <Button
                           variant="outline"
                           size="sm"
