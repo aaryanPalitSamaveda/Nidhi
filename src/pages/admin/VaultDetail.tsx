@@ -36,9 +36,12 @@ import {
   Download,
   MoreVertical,
   FolderPlus,
+  FolderOpen,
   Eye,
   Edit2,
   FileSignature,
+  X,
+  CheckSquare,
 } from 'lucide-react';
 import {
   DropdownMenu,
@@ -46,6 +49,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
+import { Checkbox } from '@/components/ui/checkbox';
 
 interface FolderItem {
   id: string;
@@ -97,6 +101,7 @@ function VaultDetailInner() {
   const [isCreateFolderOpen, setIsCreateFolderOpen] = useState(false);
   const [newFolderName, setNewFolderName] = useState('');
   const [isUploading, setIsUploading] = useState(false);
+  const [isUploadingFolders, setIsUploadingFolders] = useState(false);
   const [uploadProgress, setUploadProgress] = useState<FileUploadProgressType[]>([]);
   const [selectedDocumentId, setSelectedDocumentId] = useState<string | null>(null);
   const [isDocumentModalOpen, setIsDocumentModalOpen] = useState(false);
@@ -107,6 +112,13 @@ function VaultDetailInner() {
   const [investorNdaTemplate, setInvestorNdaTemplate] = useState<any>(null);
   const [renamingItem, setRenamingItem] = useState<{ type: 'folder' | 'document'; id: string; currentName: string } | null>(null);
   const [renameValue, setRenameValue] = useState('');
+  const [selectedFolderIds, setSelectedFolderIds] = useState<Set<string>>(new Set());
+  const [selectedDocumentIds, setSelectedDocumentIds] = useState<Set<string>>(new Set());
+  const [isMoveDialogOpen, setIsMoveDialogOpen] = useState(false);
+  const [moveDestinationId, setMoveDestinationId] = useState<string | null>(null);
+  const [moveDestinationVaultId, setMoveDestinationVaultId] = useState<string | null>(null);
+  const [allVaultFolders, setAllVaultFolders] = useState<{ id: string; name: string; parent_id: string | null; path: string }[]>([]);
+  const [allVaults, setAllVaults] = useState<{ id: string; name: string }[]>([]);
   const [isAuditDialogOpen, setIsAuditDialogOpen] = useState(false);
   const [isAuditExpanded, setIsAuditExpanded] = useState(true);
   const [auditJobId, setAuditJobId] = useState<string | null>(null);
@@ -846,6 +858,161 @@ function VaultDetailInner() {
     });
   };
 
+  const handleFolderUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const files = event.target.files;
+    if (!files || files.length === 0 || !vaultId || !user) return;
+
+    setIsUploadingFolders(true);
+
+    // Build list of files with their relative paths (FolderName/SubFolder/file.txt)
+    const filesWithPaths = Array.from(files).map((file) => ({
+      file,
+      relativePath: (file as File & { webkitRelativePath?: string }).webkitRelativePath || file.name,
+    }));
+
+    // Collect unique folder paths and sort so parents come first
+    const folderPathsSet = new Set<string>();
+    for (const { relativePath } of filesWithPaths) {
+      const parts = relativePath.split('/');
+      for (let i = 1; i < parts.length; i++) {
+        folderPathsSet.add(parts.slice(0, i).join('/'));
+      }
+    }
+    const folderPaths = Array.from(folderPathsSet).sort((a, b) => a.split('/').length - b.split('/').length);
+
+    // Map: folder path -> folder id ('' = root of selected folder)
+    const pathToFolderId = new Map<string, string | null>();
+
+    try {
+      // Create root folder for the selected directory (browser doesn't give us the folder name)
+      const rootFolderName = `Folder ${new Date().toLocaleDateString()} ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
+      const { data: rootFolder, error: rootError } = await supabase
+        .from('folders')
+        .insert({
+          vault_id: vaultId,
+          parent_id: currentFolderId,
+          name: rootFolderName,
+          created_by: user.id,
+        })
+        .select()
+        .single();
+
+      if (rootError) throw rootError;
+      pathToFolderId.set('', rootFolder?.id ?? currentFolderId);
+
+      if (rootFolder) {
+        try {
+          await supabase.rpc('log_activity', {
+            p_vault_id: vaultId,
+            p_action: 'create_folder',
+            p_resource_type: 'folder',
+            p_document_id: null,
+            p_folder_id: rootFolder.id,
+            p_resource_name: rootFolderName,
+            p_metadata: null,
+          });
+        } catch (logError) {
+          console.error('Error logging folder creation:', logError);
+        }
+      }
+
+      // Create all subfolders
+      for (const folderPath of folderPaths) {
+        const parts = folderPath.split('/');
+        const folderName = parts[parts.length - 1];
+        const parentPath = parts.slice(0, -1).join('/');
+        const parentId = pathToFolderId.get(parentPath) ?? pathToFolderId.get('') ?? currentFolderId;
+
+        const { data: folder, error: folderError } = await supabase
+          .from('folders')
+          .insert({
+            vault_id: vaultId,
+            parent_id: parentId,
+            name: folderName,
+            created_by: user.id,
+          })
+          .select()
+          .single();
+
+        if (folderError) throw folderError;
+        if (folder) {
+          pathToFolderId.set(folderPath, folder.id);
+          try {
+            await supabase.rpc('log_activity', {
+              p_vault_id: vaultId,
+              p_action: 'create_folder',
+              p_resource_type: 'folder',
+              p_document_id: null,
+              p_folder_id: folder.id,
+              p_resource_name: folderName,
+              p_metadata: null,
+            });
+          } catch (logError) {
+            console.error('Error logging folder creation:', logError);
+          }
+        }
+      }
+
+      // Initialize upload progress for all files
+      const initialUploads: FileUploadProgressType[] = filesWithPaths.map(({ file }, index) => ({
+        id: `folder_${Date.now()}_${index}_${file.name}`,
+        file,
+        progress: 0,
+        status: 'uploading' as const,
+      }));
+      setUploadProgress(initialUploads);
+
+      // Upload each file
+      const baseTs = Date.now();
+      let successCount = 0;
+      let errorCount = 0;
+      for (let i = 0; i < filesWithPaths.length; i++) {
+        const { file, relativePath } = filesWithPaths[i];
+        const uploadId = initialUploads[i].id;
+        const parts = relativePath.split('/');
+        const folderPath = parts.length > 1 ? parts.slice(0, -1).join('/') : '';
+        const folderId = pathToFolderId.get(folderPath) ?? pathToFolderId.get('') ?? currentFolderId;
+
+        const storagePath = `${user.id}/${vaultId}/folder_${baseTs}_${i}_${relativePath.replace(/\//g, '_')}`;
+
+        const result = await uploadFileWithProgress(file, storagePath, uploadId, vaultId, folderId);
+        if (result.success) successCount++;
+        else errorCount++;
+      }
+
+      if (successCount > 0) {
+        toast({
+          title: 'Folder upload complete',
+          description: `${successCount} file(s) uploaded from ${folderPaths.length} folder(s)${errorCount > 0 ? `, ${errorCount} failed` : ''}`,
+        });
+        fetchVaultData();
+      }
+      if (errorCount > 0 && successCount === 0) {
+        toast({
+          title: 'Upload failed',
+          description: `Failed to upload ${errorCount} file(s). Please check the errors and retry.`,
+          variant: 'destructive',
+        });
+      }
+    } catch (error: any) {
+      console.error('Error uploading folders:', error);
+      toast({
+        title: 'Upload failed',
+        description: error?.message || 'Failed to upload folders. Please try again.',
+        variant: 'destructive',
+      });
+    } finally {
+      setIsUploadingFolders(false);
+      event.target.value = '';
+      setTimeout(() => {
+        setUploadProgress((prev) => {
+          const allSuccess = prev.every((u) => u.status === 'success');
+          return allSuccess ? [] : prev;
+        });
+      }, 5000);
+    }
+  };
+
   const handleFileUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const files = event.target.files;
     if (!files || files.length === 0 || !vaultId || !user) return;
@@ -1097,8 +1264,233 @@ function VaultDetailInner() {
     }
   };
 
-  const handleDeleteFolder = async (folderId: string, folderName: string) => {
-    if (!confirm(`Delete "${folderName}" and all its contents?`)) return;
+  const toggleFolderSelection = (folderId: string) => {
+    setSelectedFolderIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(folderId)) next.delete(folderId);
+      else next.add(folderId);
+      return next;
+    });
+  };
+
+  const toggleDocumentSelection = (docId: string) => {
+    setSelectedDocumentIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(docId)) next.delete(docId);
+      else next.add(docId);
+      return next;
+    });
+  };
+
+  const toggleSelectAll = () => {
+    const totalCount = folders.length + documents.length;
+    const selectedCount = selectedFolderIds.size + selectedDocumentIds.size;
+    if (selectedCount === totalCount) {
+      setSelectedFolderIds(new Set());
+      setSelectedDocumentIds(new Set());
+    } else {
+      setSelectedFolderIds(new Set(folders.map((f) => f.id)));
+      setSelectedDocumentIds(new Set(documents.map((d) => d.id)));
+    }
+  };
+
+  const clearSelection = () => {
+    setSelectedFolderIds(new Set());
+    setSelectedDocumentIds(new Set());
+  };
+
+  const selectedCount = selectedFolderIds.size + selectedDocumentIds.size;
+
+  const buildFolderTree = (items: { id: string; name: string; parent_id: string | null }[]) => {
+    const result: { id: string; name: string; parent_id: string | null; path: string }[] = [];
+    const add = (f: { id: string; name: string; parent_id: string | null }, prefix: string) => {
+      result.push({ ...f, path: prefix ? `${prefix} / ${f.name}` : f.name });
+      items.filter((c) => c.parent_id === f.id).forEach((c) => add(c, result[result.length - 1].path));
+    };
+    items.filter((f) => !f.parent_id).forEach((r) => add(r, ''));
+    return result;
+  };
+
+  const fetchAllVaultFolders = useCallback(async (targetVaultId?: string) => {
+    const vid = targetVaultId ?? vaultId;
+    if (!vid) return;
+    const { data, error } = await supabase
+      .from('folders')
+      .select('id, name, parent_id')
+      .eq('vault_id', vid)
+      .order('name');
+    if (error) return;
+    setAllVaultFolders(buildFolderTree(data || []));
+  }, [vaultId]);
+
+  const fetchAllVaultsForMove = useCallback(async () => {
+    const { data, error } = await supabase.from('vaults').select('id, name').order('name');
+    if (error) return;
+    setAllVaults(data || []);
+  }, []);
+
+  const handleBulkDelete = async () => {
+    if (!vaultId || !user) return;
+    const folderCount = selectedFolderIds.size;
+    const docCount = selectedDocumentIds.size;
+    if (!confirm(`Delete ${folderCount + docCount} item(s)?${folderCount > 0 ? ' Folders and their contents will be removed.' : ''}`)) return;
+
+    try {
+      for (const docId of selectedDocumentIds) {
+        const doc = documents.find((d) => d.id === docId);
+        if (doc) await handleDeleteDocument(doc.id, doc.name, doc.file_path, true);
+      }
+      for (const folderId of selectedFolderIds) {
+        const folder = folders.find((f) => f.id === folderId);
+        if (folder) await handleDeleteFolder(folder.id, folder.name, true);
+      }
+      clearSelection();
+      fetchVaultData();
+    } catch (error) {
+      console.error('Bulk delete error:', error);
+    }
+  };
+
+  const handleBulkMove = async () => {
+    if (!vaultId || !user) return;
+    const destVaultId = moveDestinationVaultId ?? vaultId;
+    const destFolderId = moveDestinationId === 'root' || moveDestinationId === null ? null : moveDestinationId;
+
+    if (destVaultId === vaultId && destFolderId && selectedFolderIds.has(destFolderId)) {
+      toast({ title: 'Invalid destination', description: 'Cannot move a folder into itself.', variant: 'destructive' });
+      return;
+    }
+
+    const isCrossVault = destVaultId !== vaultId;
+
+    try {
+      if (isCrossVault) {
+        // Cross-vault move: copy files to new vault, create records, delete originals
+        const folderIdsToMove = new Set(selectedFolderIds);
+        const allFoldersInSource = await supabase.from('folders').select('id, name, parent_id').eq('vault_id', vaultId);
+        if (allFoldersInSource.error) throw allFoldersInSource.error;
+
+        const addDescendants = (ids: Set<string>) => {
+          const items = allFoldersInSource.data || [];
+          for (const f of items) {
+            if (f.parent_id && ids.has(f.parent_id)) ids.add(f.id);
+          }
+        };
+        let prevSize = 0;
+        while (folderIdsToMove.size !== prevSize) {
+          prevSize = folderIdsToMove.size;
+          addDescendants(folderIdsToMove);
+        }
+
+        const foldersToMove = (allFoldersInSource.data || []).filter((f) => folderIdsToMove.has(f.id));
+        const sortedFolders = foldersToMove.sort((a, b) => {
+          if (!a.parent_id) return -1;
+          if (!b.parent_id) return 1;
+          const aDepth = foldersToMove.filter((x) => x.parent_id === a.id).length ? 1 : 0;
+          const bDepth = foldersToMove.filter((x) => x.parent_id === b.id).length ? 1 : 0;
+          return aDepth - bDepth;
+        });
+        const parentFirst = (): typeof foldersToMove => {
+          const result: typeof foldersToMove = [];
+          const add = (f: (typeof foldersToMove)[0]) => {
+            if (result.some((r) => r.id === f.id)) return;
+            if (f.parent_id) {
+              const parent = foldersToMove.find((x) => x.id === f.parent_id);
+              if (parent) add(parent);
+            }
+            result.push(f);
+          };
+          sortedFolders.forEach(add);
+          return result;
+        };
+        const orderedFolders = parentFirst();
+
+        const oldToNewFolder = new Map<string, string>();
+        for (const f of orderedFolders) {
+          const newParentId = f.parent_id ? oldToNewFolder.get(f.parent_id) ?? destFolderId : destFolderId;
+          const { data: newFolder, error: folderErr } = await supabase
+            .from('folders')
+            .insert({ vault_id: destVaultId, name: f.name, parent_id: newParentId || null, created_by: user.id })
+            .select('id')
+            .single();
+          if (folderErr) throw folderErr;
+          if (newFolder) oldToNewFolder.set(f.id, newFolder.id);
+        }
+
+        const docsToMoveMap = new Map<string, { id: string; name: string; file_path: string; file_size: number | null; file_type: string | null; folder_id: string | null }>();
+        if (selectedDocumentIds.size > 0) {
+          const { data: selDocs } = await supabase
+            .from('documents')
+            .select('id, name, file_path, file_size, file_type, folder_id')
+            .in('id', [...selectedDocumentIds])
+            .eq('vault_id', vaultId);
+          selDocs?.forEach((d) => docsToMoveMap.set(d.id, d));
+        }
+        for (const folderId of folderIdsToMove) {
+          const { data: folderDocs } = await supabase
+            .from('documents')
+            .select('id, name, file_path, file_size, file_type, folder_id')
+            .eq('vault_id', vaultId)
+            .eq('folder_id', folderId);
+          folderDocs?.forEach((d) => docsToMoveMap.set(d.id, d));
+        }
+        const docsToMove = [...docsToMoveMap.values()];
+
+        for (const doc of docsToMove) {
+          const { data: fileData } = await supabase.storage.from('documents').download(doc.file_path);
+          if (!fileData) throw new Error(`Could not download ${doc.name}`);
+          const newPath = `${user.id}/${destVaultId}/${Date.now()}_${doc.name}`;
+          const { error: uploadErr } = await supabase.storage.from('documents').upload(newPath, fileData, {
+            contentType: doc.file_type || 'application/octet-stream',
+            upsert: false,
+          });
+          if (uploadErr) throw uploadErr;
+
+          const newFolderId = doc.folder_id ? oldToNewFolder.get(doc.folder_id) ?? destFolderId : destFolderId;
+          const { error: insertErr } = await supabase.from('documents').insert({
+            vault_id: destVaultId,
+            folder_id: newFolderId || null,
+            name: doc.name,
+            file_path: newPath,
+            file_size: doc.file_size,
+            file_type: doc.file_type,
+            uploaded_by: user.id,
+          });
+          if (insertErr) throw insertErr;
+
+          await supabase.storage.from('documents').remove([doc.file_path]);
+          await supabase.from('documents').delete().eq('id', doc.id);
+        }
+
+        for (const f of orderedFolders.reverse()) {
+          await supabase.from('folders').delete().eq('id', f.id);
+        }
+      } else {
+        // Same-vault move
+        for (const docId of selectedDocumentIds) {
+          const { error } = await supabase.from('documents').update({ folder_id: destFolderId }).eq('id', docId);
+          if (error) throw error;
+        }
+        for (const folderId of selectedFolderIds) {
+          if (destFolderId === folderId) continue;
+          const { error } = await supabase.from('folders').update({ parent_id: destFolderId }).eq('id', folderId);
+          if (error) throw error;
+        }
+      }
+
+      toast({ title: 'Moved', description: `${selectedCount} item(s) moved successfully` });
+      clearSelection();
+      setIsMoveDialogOpen(false);
+      setMoveDestinationId(null);
+      setMoveDestinationVaultId(null);
+      fetchVaultData();
+    } catch (error: any) {
+      toast({ title: 'Error', description: error?.message || 'Failed to move', variant: 'destructive' });
+    }
+  };
+
+  const handleDeleteFolder = async (folderId: string, folderName: string, skipConfirm?: boolean) => {
+    if (!skipConfirm && !confirm(`Delete "${folderName}" and all its contents?`)) return;
     if (!vaultId || !user) return;
 
     try {
@@ -1140,8 +1532,8 @@ function VaultDetailInner() {
     }
   };
 
-  const handleDeleteDocument = async (docId: string, docName: string, filePath: string) => {
-    if (!confirm(`Delete "${docName}"?`)) return;
+  const handleDeleteDocument = async (docId: string, docName: string, filePath: string, skipConfirm?: boolean) => {
+    if (!skipConfirm && !confirm(`Delete "${docName}"?`)) return;
     if (!vaultId || !user) return;
 
     try {
@@ -2151,6 +2543,23 @@ function VaultDetailInner() {
                 disabled={isUploading}
               />
             </label>
+            <label>
+              <Button variant="outline" disabled={isUploadingFolders || isUploading} asChild size="sm" className="text-xs sm:text-sm">
+                <span>
+                  <FolderOpen className="w-3 h-3 sm:w-4 sm:h-4 mr-1 sm:mr-2" />
+                  <span className="hidden sm:inline">{isUploadingFolders ? 'Uploading...' : 'Upload Folders'}</span>
+                  <span className="sm:hidden">{isUploadingFolders ? '...' : 'Folders'}</span>
+                </span>
+              </Button>
+              <input
+                type="file"
+                {...({ webkitdirectory: '' } as React.InputHTMLAttributes<HTMLInputElement>)}
+                multiple
+                className="hidden"
+                onChange={handleFolderUpload}
+                disabled={isUploadingFolders || isUploading}
+              />
+            </label>
             
             {/* NDA Template Upload - Separate for Seller and Investor */}
             <div className="flex flex-col gap-3">
@@ -2266,33 +2675,80 @@ function VaultDetailInner() {
               <FolderLock className="w-12 h-12 sm:w-16 sm:h-16 text-muted-foreground mx-auto mb-4" />
               <h2 className="font-display text-lg sm:text-xl text-foreground mb-2">Empty Folder</h2>
               <p className="text-sm sm:text-base text-muted-foreground mb-6">
-                Upload files or create folders to get started
+                Upload files, upload folders, or create folders to get started
               </p>
             </div>
           ) : (
             <div className="space-y-2">
+              {/* Bulk actions bar - only when in selection mode (selectedCount > 0) */}
+              {selectedCount > 0 && (
+                <div className="flex items-center justify-between gap-2 mb-4 pb-3 border-b border-gold/10">
+                  <div className="flex items-center gap-2">
+                    <Checkbox
+                      checked={selectedCount === folders.length + documents.length}
+                      onCheckedChange={toggleSelectAll}
+                    />
+                    <span className="text-sm text-muted-foreground">
+                      {selectedCount} selected
+                    </span>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={async () => {
+                        await fetchAllVaultsForMove();
+                        setMoveDestinationVaultId(vaultId || null);
+                        await fetchAllVaultFolders(vaultId);
+                        setMoveDestinationId(currentFolderId || 'root');
+                        setIsMoveDialogOpen(true);
+                      }}
+                    >
+                      <FolderOpen className="w-4 h-4 mr-1" />
+                      Move
+                    </Button>
+                    <Button variant="destructive" size="sm" onClick={handleBulkDelete}>
+                      <Trash2 className="w-4 h-4 mr-1" />
+                      Delete
+                    </Button>
+                  </div>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    onClick={clearSelection}
+                    title="Exit selection mode"
+                  >
+                    <X className="w-4 h-4" />
+                  </Button>
+                </div>
+              )}
               {/* Folders */}
               {folders.map((folder) => (
                 <div
                   key={folder.id}
-                  className="flex items-center justify-between p-3 sm:p-4 rounded-lg hover:bg-muted/30 transition-colors group"
+                  className={`flex items-center justify-between p-3 sm:p-4 rounded-lg hover:bg-muted/30 transition-colors group ${selectedFolderIds.has(folder.id) ? 'bg-gold/10 border border-gold/30' : ''}`}
                 >
-                  <button
-                    onClick={() => {
-                      setCurrentFolderId(folder.id);
-                    }}
-                    className="flex items-center gap-4 flex-1 text-left"
-                  >
-                    <div className="w-10 h-10 rounded-lg bg-gold/10 flex items-center justify-center">
-                      <Folder className="w-5 h-5 text-gold" />
-                    </div>
-                    <div>
-                      <p className="font-medium text-foreground">{folder.name}</p>
-                      <p className="text-sm text-muted-foreground">
-                        {new Date(folder.created_at).toLocaleDateString()}
-                      </p>
-                    </div>
-                  </button>
+                  <div className="flex items-center gap-3 flex-1 min-w-0">
+                    {selectedCount > 0 && (
+                      <Checkbox
+                        checked={selectedFolderIds.has(folder.id)}
+                        onCheckedChange={() => toggleFolderSelection(folder.id)}
+                        onClick={(e) => e.stopPropagation()}
+                      />
+                    )}
+                    <button
+                      onClick={() => setCurrentFolderId(folder.id)}
+                      className="flex items-center gap-4 flex-1 text-left min-w-0"
+                    >
+                      <div className="w-10 h-10 rounded-lg bg-gold/10 flex items-center justify-center">
+                        <Folder className="w-5 h-5 text-gold" />
+                      </div>
+                      <div>
+                        <p className="font-medium text-foreground">{folder.name}</p>
+                        <p className="text-sm text-muted-foreground">
+                          {new Date(folder.created_at).toLocaleDateString()}
+                        </p>
+                      </div>
+                    </button>
+                  </div>
                   <DropdownMenu>
                     <DropdownMenuTrigger asChild>
                       <Button variant="ghost" size="icon" className="opacity-0 group-hover:opacity-100">
@@ -2300,6 +2756,10 @@ function VaultDetailInner() {
                       </Button>
                     </DropdownMenuTrigger>
                     <DropdownMenuContent align="end">
+                      <DropdownMenuItem onClick={() => toggleFolderSelection(folder.id)}>
+                        <CheckSquare className="w-4 h-4 mr-2" />
+                        {selectedFolderIds.has(folder.id) ? 'Deselect' : 'Select'}
+                      </DropdownMenuItem>
                       <DropdownMenuItem
                         onClick={() => {
                           setRenamingItem({ type: 'folder', id: folder.id, currentName: folder.name });
@@ -2325,15 +2785,23 @@ function VaultDetailInner() {
               {documents.map((doc) => (
                 <div
                   key={doc.id}
-                  className="flex items-center justify-between p-3 sm:p-4 rounded-lg hover:bg-muted/30 transition-colors group"
+                  className={`flex items-center justify-between p-3 sm:p-4 rounded-lg hover:bg-muted/30 transition-colors group ${selectedDocumentIds.has(doc.id) ? 'bg-gold/10 border border-gold/30' : ''}`}
                 >
-                  <button
-                    onClick={() => {
-                      setSelectedDocumentId(doc.id);
-                      setIsDocumentModalOpen(true);
-                    }}
-                    className="flex items-center gap-4 flex-1 text-left"
-                  >
+                  <div className="flex items-center gap-3 flex-1 min-w-0">
+                    {selectedCount > 0 && (
+                      <Checkbox
+                        checked={selectedDocumentIds.has(doc.id)}
+                        onCheckedChange={() => toggleDocumentSelection(doc.id)}
+                        onClick={(e) => e.stopPropagation()}
+                      />
+                    )}
+                    <button
+                      onClick={() => {
+                        setSelectedDocumentId(doc.id);
+                        setIsDocumentModalOpen(true);
+                      }}
+                      className="flex items-center gap-4 flex-1 text-left min-w-0"
+                    >
                     <div className="w-10 h-10 rounded-lg bg-secondary flex items-center justify-center">
                       <FileText className="w-5 h-5 text-muted-foreground" />
                     </div>
@@ -2374,6 +2842,7 @@ function VaultDetailInner() {
                       </div>
                     </div>
                   </button>
+                  </div>
                   <div className="flex items-center gap-2">
                     <Button
                       variant="ghost"
@@ -2405,6 +2874,10 @@ function VaultDetailInner() {
                         </Button>
                       </DropdownMenuTrigger>
                       <DropdownMenuContent align="end">
+                        <DropdownMenuItem onClick={() => toggleDocumentSelection(doc.id)}>
+                          <CheckSquare className="w-4 h-4 mr-2" />
+                          {selectedDocumentIds.has(doc.id) ? 'Deselect' : 'Select'}
+                        </DropdownMenuItem>
                         <DropdownMenuItem onClick={() => {
                           setSelectedDocumentId(doc.id);
                           setIsDocumentModalOpen(true);
@@ -2490,6 +2963,103 @@ function VaultDetailInner() {
               </Button>
               <Button variant="gold" onClick={handleRename} disabled={!renameValue.trim()}>
                 Rename
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Move Dialog */}
+      <Dialog open={isMoveDialogOpen} onOpenChange={(open) => {
+        if (!open) {
+          setIsMoveDialogOpen(false);
+          setMoveDestinationId(null);
+          setMoveDestinationVaultId(null);
+        }
+      }}>
+        <DialogContent className="bg-card border-gold/20 sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle className="font-display text-xl">Move to</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4 mt-4">
+            <p className="text-sm text-muted-foreground">Move {selectedCount} item(s) to:</p>
+
+            {/* Vault selector */}
+            <div className="space-y-2">
+              <label className="text-sm font-medium">Dataroom</label>
+              <select
+                value={moveDestinationVaultId ?? vaultId ?? ''}
+                onChange={async (e) => {
+                  const vid = e.target.value || vaultId || null;
+                  setMoveDestinationVaultId(vid);
+                  setMoveDestinationId('root');
+                  if (vid) await fetchAllVaultFolders(vid);
+                }}
+                className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+              >
+                {allVaults.length === 0 && vaultId && vault ? (
+                  <option value={vaultId}>{vault.name} (current)</option>
+                ) : (
+                  allVaults.map((v) => (
+                    <option key={v.id} value={v.id}>
+                      {v.name} {v.id === vaultId ? '(current)' : ''}
+                    </option>
+                  ))
+                )}
+              </select>
+            </div>
+
+            {/* Folder destination */}
+            <div className="space-y-2">
+              <label className="text-sm font-medium">Destination folder</label>
+              <div className="max-h-48 overflow-y-auto space-y-1 border rounded-md p-1">
+                <label className="flex items-center gap-2 p-2 rounded hover:bg-muted/30 cursor-pointer">
+                  <input
+                    type="radio"
+                    name="moveDest"
+                    checked={moveDestinationId === 'root'}
+                    onChange={() => setMoveDestinationId('root')}
+                    className="rounded-full"
+                  />
+                  <Folder className="w-4 h-4 text-gold" />
+                  <span className="font-medium">Root</span>
+                </label>
+                {allVaultFolders
+                  .filter((f) => {
+                    if (moveDestinationVaultId === vaultId && selectedFolderIds.has(f.id)) return false;
+                    if (moveDestinationVaultId === vaultId) {
+                      const isDescendantOfSelected = (folderId: string): boolean => {
+                        const folder = allVaultFolders.find((x) => x.id === folderId);
+                        if (!folder?.parent_id) return false;
+                        if (selectedFolderIds.has(folder.parent_id)) return true;
+                        return isDescendantOfSelected(folder.parent_id);
+                      };
+                      return !isDescendantOfSelected(f.id);
+                    }
+                    return true;
+                  })
+                  .map((folder) => (
+                    <label key={folder.id} className="flex items-center gap-2 p-2 rounded hover:bg-muted/30 cursor-pointer">
+                      <input
+                        type="radio"
+                        name="moveDest"
+                        checked={moveDestinationId === folder.id}
+                        onChange={() => setMoveDestinationId(folder.id)}
+                        className="rounded-full"
+                      />
+                      <Folder className="w-4 h-4 text-gold flex-shrink-0" />
+                      <span className="truncate">{folder.path}</span>
+                    </label>
+                  ))}
+              </div>
+            </div>
+
+            <div className="flex gap-2 justify-end pt-2">
+              <Button variant="outline" onClick={() => { setIsMoveDialogOpen(false); setMoveDestinationId(null); setMoveDestinationVaultId(null); }}>
+                Cancel
+              </Button>
+              <Button variant="gold" onClick={handleBulkMove}>
+                Move
               </Button>
             </div>
           </div>
