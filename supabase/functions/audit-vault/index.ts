@@ -1034,6 +1034,8 @@ try {
           .eq("id", jobId);
       };
 
+      const PER_FILE_TIMEOUT_MS = 90 * 1000; // 90 seconds - skip if a file takes longer
+
       for (const f of pending ?? []) {
         const fileId = (f as any).id as string;
         const filePath = (f as any).file_path as string;
@@ -1048,7 +1050,7 @@ try {
         // Update progress to show current file being processed
         await updateProgress(fileName);
 
-        try {
+        const processOneFile = async () => {
           // Download file bytes (handle split metadata placeholders)
           let bytes: Uint8Array | null = null;
           let effectiveFileName = fileName;
@@ -1153,7 +1155,7 @@ try {
             
             // Update progress after skipping
             await updateProgress();
-            continue;
+            return;
           }
 
           let factsJson: any = null;
@@ -1226,7 +1228,8 @@ try {
             // If we still don't have factsJson after retries, skip this file
             if (!factsJson) {
               console.error("Failed to get factsJson after all retries, skipping file");
-              continue; // Skip to next file in the for loop
+              await updateProgress();
+              return;
             }
             
             factsJson = validateCitedJson(
@@ -1255,15 +1258,33 @@ try {
           
           // Update progress after each file completes
           await updateProgress();
+        };
+
+        const timeoutPromise = new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error("Processing timed out (90s)")), PER_FILE_TIMEOUT_MS)
+        );
+
+        try {
+          await Promise.race([processOneFile(), timeoutPromise]);
         } catch (err) {
           const msg = (err as any)?.message ?? String(err);
+          const isTimeout = msg.includes("timed out");
+          const updatePayload: Record<string, unknown> = {
+            status: isTimeout ? "skipped" : "failed",
+            completed_at: new Date().toISOString(),
+            error: msg.slice(0, 1000),
+          };
+          if (isTimeout) {
+            updatePayload.facts_json = { document_type: "unknown", summary: "Skipped: processing timed out", facts: [], internal_red_flags: [] };
+            updatePayload.evidence_json = { snippets: [] };
+          }
           await supabaseAdmin
             .from("audit_job_files")
-            .update({ status: "failed", completed_at: new Date().toISOString(), error: msg.slice(0, 1000) })
+            .update(updatePayload)
             .eq("id", fileId);
           
-          // Update progress even if file failed
           await updateProgress();
+          if (isTimeout) console.warn(`Skipped ${fileName}: processing timed out`);
         }
       }
 
