@@ -957,7 +957,7 @@ try {
     }
 
     if (body.action === "run") {
-      const { jobId, maxFiles = 2 } = body as RunBody;
+      const { jobId, maxFiles = 5 } = body as RunBody;
       if (!jobId) return jsonResponse({ error: "Missing jobId" }, 400);
       const batchSize = Math.max(1, Math.min(5, maxFiles));
 
@@ -1007,13 +1007,15 @@ try {
         const processed = doneCount ?? 0;
         const baseProgress = total > 0 ? Math.floor((processed / total) * 90) : 100;
         
-        // Calculate estimated remaining time
+        // Calculate estimated remaining time; cap at 4 hours to avoid wild ETA glitches
+        const MAX_ETA_SECONDS = 4 * 60 * 60; // 4 hours
         let estimatedRemainingSeconds: number | null = null;
         if (job.started_at && processed > 0) {
-          const elapsedSeconds = (new Date().getTime() - new Date(job.started_at).getTime()) / 1000;
+          const elapsedSeconds = Math.max(1, (new Date().getTime() - new Date(job.started_at).getTime()) / 1000);
           const filesPerSecond = processed / elapsedSeconds;
-          if (filesPerSecond > 0) {
-            estimatedRemainingSeconds = Math.round((total - processed) / filesPerSecond);
+          if (filesPerSecond > 0.001) {
+            const raw = Math.round((total - processed) / filesPerSecond);
+            estimatedRemainingSeconds = Math.min(MAX_ETA_SECONDS, Math.max(0, raw));
           }
         }
         
