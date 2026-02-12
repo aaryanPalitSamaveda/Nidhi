@@ -31,7 +31,10 @@ export default function Dashboard() {
     
     try {
       // Parallelize all queries for better performance
-      const [vaultsResult, docsCountResult, usersCountResult] = await Promise.all([
+      const [vaultsCountResult, recentVaultsResult, docsCountResult, usersCountResult] = await Promise.all([
+        supabase
+          .from('vaults')
+          .select('*', { count: 'exact', head: true }),
         supabase
           .from('vaults')
           .select('*')
@@ -47,19 +50,19 @@ export default function Dashboard() {
 
       if (isAdmin) {
         setStats({
-          totalVaults: vaultsResult.data?.length || 0,
+          totalVaults: vaultsCountResult.count || 0,
           totalUsers: usersCountResult.count || 0,
           totalDocuments: docsCountResult.count || 0,
         });
       } else {
         setStats({
-          totalVaults: vaultsResult.data?.length || 0,
+          totalVaults: vaultsCountResult.count || 0,
           totalUsers: 0,
           totalDocuments: docsCountResult.count || 0,
         });
       }
 
-      setRecentVaults(vaultsResult.data || []);
+      setRecentVaults(recentVaultsResult.data || []);
     } catch (error) {
       console.error('Error fetching dashboard data:', error);
     } finally {
