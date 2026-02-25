@@ -301,7 +301,7 @@
 
 // export default ChatWidget;
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import ChatWindow from './ChatWindow';
 import { ChatIcon, SparkleIcon } from '../Icons/Icons';
@@ -374,16 +374,19 @@ const ChatWidget: React.FC = () => {
     };
   }, [currentVaultId, isOpen]);
 
-  const toggleChat = (): void => {
-    if (!isOpen) {
-      // Refresh vaultId when opening chat
-      const newVaultId = getVaultIdFromURL();
-      setCurrentVaultId(newVaultId);
-      console.log('💬 Opening chat for vault:', newVaultId);
-    }
-    setIsOpen(!isOpen);
+  const toggleChat = useCallback((): void => {
+    setIsOpen((prev) => {
+      if (!prev) {
+        const newVaultId = getVaultIdFromURL();
+        setCurrentVaultId(newVaultId);
+        console.log('💬 Opening chat for vault:', newVaultId);
+      }
+      return !prev;
+    });
     setHasNewMessage(false);
-  };
+  }, []);
+
+  const handleClose = useCallback(() => setIsOpen(false), []);
 
   return (
     <div className="fixed bottom-6 right-6 z-50">
@@ -399,7 +402,7 @@ const ChatWidget: React.FC = () => {
           >
             {/* Pass userId AND vaultId to ChatWindow */}
             <ChatWindow 
-              onClose={() => setIsOpen(false)} 
+              onClose={handleClose} 
               userId={user?.id} 
               vaultId={currentVaultId}
             />

@@ -16,6 +16,7 @@ import { useAuth } from '@/contexts/AuthContext';
 import DocumentViewerModal from '@/components/DocumentViewerModal';
 import NDAOverlay from '@/components/NDAOverlay';
 import { FileUploadProgress, FileUploadProgress as FileUploadProgressType } from '@/components/FileUploadProgress';
+import { formatFileSize } from '@/utils/format';
 import {
   FolderLock,
   Folder,
@@ -1148,14 +1149,6 @@ export default function ClientVault() {
         variant: 'destructive',
       });
     }
-  };
-
-  const formatFileSize = (bytes: number | null) => {
-    if (!bytes) return 'Unknown';
-    if (bytes < 1024) return `${bytes} B`;
-    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-    if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-    return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
   };
 
   // Vault list view

@@ -2,6 +2,7 @@ import { X, CheckCircle2, AlertCircle, Upload } from 'lucide-react';
 import { Progress } from '@/components/ui/progress';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
+import { formatFileSize } from '@/utils/format';
 
 export interface FileUploadProgress {
   id: string;
@@ -19,13 +20,6 @@ interface FileUploadProgressProps {
 
 export function FileUploadProgress({ uploads, onRemove, onRetry }: FileUploadProgressProps) {
   if (uploads.length === 0) return null;
-
-  const formatFileSize = (bytes: number) => {
-    if (bytes < 1024) return `${bytes} B`;
-    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-    if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-    return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
-  };
 
   return (
     <div className="space-y-3 p-4 bg-card border border-gold/20 rounded-xl">

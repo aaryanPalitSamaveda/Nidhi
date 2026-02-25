@@ -74,16 +74,20 @@ export default function Dashboard() {
     fetchDashboardData();
   }, [fetchDashboardData]);
 
-  const statCards = isAdmin
-    ? [
-        { icon: FolderLock, label: 'Total Datarooms', value: stats.totalVaults, href: '/admin/vaults' },
-        { icon: Users, label: 'Total Users', value: stats.totalUsers, href: '/admin/users' },
-        { icon: FileText, label: 'Documents', value: stats.totalDocuments, href: '/admin/vaults' },
-      ]
-    : [
-        { icon: FolderLock, label: 'My Datarooms', value: stats.totalVaults, href: '/vault' },
-        { icon: FileText, label: 'Documents', value: stats.totalDocuments, href: '/vault' },
-      ];
+  const statCards = useMemo(
+    () =>
+      isAdmin
+        ? [
+            { icon: FolderLock, label: 'Total Datarooms', value: stats.totalVaults, href: '/admin/vaults' },
+            { icon: Users, label: 'Total Users', value: stats.totalUsers, href: '/admin/users' },
+            { icon: FileText, label: 'Documents', value: stats.totalDocuments, href: '/admin/vaults' },
+          ]
+        : [
+            { icon: FolderLock, label: 'My Datarooms', value: stats.totalVaults, href: '/vault' },
+            { icon: FileText, label: 'Documents', value: stats.totalDocuments, href: '/vault' },
+          ],
+    [isAdmin, stats.totalVaults, stats.totalUsers, stats.totalDocuments]
+  );
 
   return (
     <DashboardLayout>

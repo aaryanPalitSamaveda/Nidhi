@@ -51,6 +51,7 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { Checkbox } from '@/components/ui/checkbox';
+import { formatFileSize } from '@/utils/format';
 
 interface FolderItem {
   id: string;
@@ -2237,14 +2238,6 @@ function VaultDetailInner() {
     }, 6000);
     return () => clearInterval(poll);
   }, [isAuditDialogOpen, auditJobId, auditJob?.status]);
-
-  const formatFileSize = (bytes: number | null) => {
-    if (!bytes) return 'Unknown';
-    if (bytes < 1024) return `${bytes} B`;
-    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-    if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-    return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
-  };
 
   if (loading) {
     return (
