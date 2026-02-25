@@ -669,15 +669,49 @@ function finalSynthesisPrompt(input: {
     '     "recommended_next_steps": string[]  // Specific, actionable steps',
     "  } ],",
     '  "coverage_notes": string[]  // Notes about document coverage, missing documents, limitations',
+    '  "company_names_found": string[]  // CRITICAL: List ALL company names, mandate names, entity names, trade names, or legal names that appear in the documents. These will be replaced with the dataroom name. Include variations (e.g. "Acme Corp", "Acme Corporation", "ACME").',
     "}",
     "",
     "Remember: Be thorough, question everything questionable, pinpoint exact issues, and provide expert-level analysis based on your 50 years of forensic accounting experience.",
     "",
-    "CRITICAL: In the executive summary, red flags, and all report sections, replace any company names, mandate names, or entity names found in the documents with the dataroom name provided above. Never reveal the actual company name - always use the dataroom name instead.",
+    "CRITICAL: In the executive summary, red flags, and all report sections, replace any company names, mandate names, or entity names found in the documents with the dataroom name provided above. Never reveal the actual company name - always use the dataroom name instead. Populate company_names_found with every such name you find.",
   ].join("\n");
 }
 
-function reportMarkdownFromJson(report: any): string {
+function extractCompanyNamesFromFacts(fileFacts: Array<{ file_name: string; file_path: string; facts_json: any }>): string[] {
+  const names = new Set<string>();
+  const partyKeys = /^(party|company|vendor|customer|entity|mandate|legal_name|trade_name|account_holder|bank_name|payer|payee)(?:_|$)/i;
+  for (const { facts_json } of fileFacts ?? []) {
+    const facts = Array.isArray(facts_json?.facts) ? facts_json.facts : [];
+    for (const f of facts) {
+      const key = String(f?.key ?? "").toLowerCase();
+      const value = String(f?.value ?? "").trim();
+      if (value.length >= 2 && value.length <= 100 && partyKeys.test(key)) {
+        names.add(value);
+      }
+    }
+  }
+  return Array.from(names);
+}
+
+function sanitizeCompanyNames(text: string, dataroomName: string, namesToReplace: string[]): string {
+  if (!text || !dataroomName) return text;
+  let result = text;
+  const seen = new Set<string>();
+  for (const name of namesToReplace ?? []) {
+    const n = String(name).trim();
+    if (!n || n.length < 2 || seen.has(n.toLowerCase())) continue;
+    seen.add(n.toLowerCase());
+    // Skip if it's already the dataroom name
+    if (n.toLowerCase() === dataroomName.toLowerCase()) continue;
+    const escaped = n.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const re = new RegExp(escaped, "gi");
+    result = result.replace(re, dataroomName);
+  }
+  return result;
+}
+
+function reportMarkdownFromJson(report: any, vaultName: string): string {
   const lines: string[] = [];
   lines.push(`## Forensic AI Audit Report`);
   lines.push("");
@@ -725,7 +759,9 @@ function reportMarkdownFromJson(report: any): string {
   const coverageNotes = Array.isArray(report?.coverage_notes) ? report.coverage_notes : [];
   coverageNotes.forEach((n: any) => lines.push(`- ${n}`));
   lines.push("");
-  return lines.join("\n");
+  const rawMd = lines.join("\n");
+  const companyNames = Array.isArray(report?.company_names_found) ? report.company_names_found : [];
+  return sanitizeCompanyNames(rawMd, vaultName, companyNames);
 }
 
 // Top-level error handler to catch ANY errors
@@ -1414,7 +1450,7 @@ try {
               console.warn("OpenAI synthesis failed; falling back to forensic-only report:", synthesisError);
             }
 
-            const reportMd = reportJson ? reportMarkdownFromJson(reportJson) : "";
+            const reportMd = reportJson ? reportMarkdownFromJson(reportJson, vaultName) : "";
             const auditMd = reportMd
               ? reportMd.replace(/^##\s+Forensic AI Audit Report\s*/i, "## Forensic Audit Report\n\n")
               : "";
@@ -1442,6 +1478,10 @@ try {
             }
 
             combinedReportMd = sanitizeForensicText(combinedReportMd);
+            const fromModel = Array.isArray(reportJson?.company_names_found) ? reportJson.company_names_found : [];
+            const fromFacts = extractCompanyNamesFromFacts(payload);
+            const companyNames = [...new Set([...fromModel, ...fromFacts])];
+            combinedReportMd = sanitizeCompanyNames(combinedReportMd, vaultName, companyNames);
             const reportJsonObject: Record<string, Json> =
               reportJson && typeof reportJson === "object"
                 ? (reportJson as Record<string, Json>)

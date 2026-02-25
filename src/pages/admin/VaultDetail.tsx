@@ -16,10 +16,11 @@ import { ScrollArea } from '@/components/ui/scroll-area';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import jsPDF from 'jspdf';
-import html2canvas from 'html2canvas';
 import { runCIMGeneration } from '@/services/CIM/cimGenerationController';
 import type { CIMReport } from '@/services/CIM/types';
+import { runTeaserGeneration, getFormattedTeaser } from '@/services/teaser/teaserGenerationController';
+import type { TeaserReport } from '@/services/teaser/types';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { useToast } from '@/hooks/use-toast';
 import { useAuth } from '@/contexts/AuthContext';
 import DocumentViewerModal from '@/components/DocumentViewerModal';
@@ -165,6 +166,10 @@ function VaultDetailInner() {
     }
   }, [auditJob?.report_markdown]);
   const [isCimDialogOpen, setIsCimDialogOpen] = useState(false);
+  const [teaserReport, setTeaserReport] = useState<TeaserReport | null>(null);
+  const [teaserError, setTeaserError] = useState<string | null>(null);
+  const [teaserIsRunning, setTeaserIsRunning] = useState(false);
+  const teaserAbortControllerRef = useRef<AbortController | null>(null);
   const [cimReport, setCimReport] = useState<CIMReport | null>(null);
   const [cimIsRunning, setCimIsRunning] = useState(false);
   const [cimError, setCimError] = useState<string | null>(null);
@@ -1715,6 +1720,11 @@ function VaultDetailInner() {
     if (!auditJobId || auditIsRunning) return;
     setAuditIsRunning(true);
     try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) {
+        setAuditError('Please log in again to run the audit.');
+        return;
+      }
       const { data, error } = await supabase.functions.invoke('audit-vault', {
         body: { action: 'run', jobId: auditJobId, maxFiles: 5 },
       });
@@ -1723,7 +1733,11 @@ function VaultDetailInner() {
       setAuditError(null);
     } catch (e: any) {
       const msg = e?.message || e?.error || 'Audit batch failed';
-      setAuditError(msg);
+      const status = e?.context?.response?.status ?? e?.context?.status;
+      const is401 = status === 401 || String(msg).toLowerCase().includes('401') || String(msg).toLowerCase().includes('unauthorized');
+      setAuditError(is401
+        ? 'Session expired or admin access required. Please log out and log in again.'
+        : msg);
     } finally {
       setAuditIsRunning(false);
     }
@@ -1737,6 +1751,8 @@ function VaultDetailInner() {
     if (persistedJobId) {
       setAuditJobId(persistedJobId);
       try {
+        const { data: { session } } = await supabase.auth.getSession();
+        if (!session) return;
         const { data, error } = await supabase.functions.invoke('audit-vault', {
           body: { action: 'status', jobId: persistedJobId },
         });
@@ -1979,69 +1995,21 @@ function VaultDetailInner() {
       await new Promise(resolve => setTimeout(resolve, 200));
       void tempDiv.offsetHeight;
 
-      const canvas = await html2canvas(tempDiv, {
-        scale: 2,
-        useCORS: true,
-        backgroundColor: '#ffffff',
-        logging: false,
-        width: tempDiv.scrollWidth,
-        height: tempDiv.scrollHeight,
-      });
+      const dataroomName = vault?.name ?? 'Dataroom';
+      const html2pdf = (await import('html2pdf.js')).default;
+      const safeName = dataroomName.replace(/\s+/g, '_');
+      const options = {
+        margin: 10,
+        filename: `audit_report_${safeName}_${auditJob?.id || 'job'}.pdf`,
+        image: { type: 'jpeg', quality: 0.98 },
+        html2canvas: { scale: 2, backgroundColor: '#ffffff' },
+        jsPDF: { orientation: 'portrait', unit: 'mm', format: 'a4' },
+      };
 
+      const pdfBlob = await html2pdf().set(options).from(tempDiv).outputPdf('blob');
       document.body.removeChild(tempDiv);
 
-      const imgWidth = 210;
-      const pageHeight = 297;
-      const pageMargin = 10;
-      const usablePageHeight = pageHeight - (2 * pageMargin);
-      const usablePageWidth = imgWidth - (2 * pageMargin);
-      const imgHeight = (canvas.height * imgWidth) / canvas.width;
-
-      const pdf = new jsPDF('p', 'mm', 'a4');
-      let sourceY = 0;
-      let remainingHeight = canvas.height;
-
-      while (remainingHeight > 0) {
-        const sourceHeight = Math.min(
-          remainingHeight,
-          (usablePageHeight / imgHeight) * canvas.height
-        );
-
-        const pageCanvas = document.createElement('canvas');
-        pageCanvas.width = canvas.width;
-        pageCanvas.height = sourceHeight;
-        const pageCtx = pageCanvas.getContext('2d');
-        if (!pageCtx) {
-          throw new Error('Failed to create canvas context');
-        }
-
-        pageCtx.drawImage(
-          canvas,
-          0, sourceY, canvas.width, sourceHeight,
-          0, 0, canvas.width, sourceHeight
-        );
-
-        const pageImgDataUrl = pageCanvas.toDataURL('image/png');
-        const pageImgHeight = (sourceHeight / canvas.height) * imgHeight * (usablePageWidth / imgWidth);
-
-        pdf.addImage(
-          pageImgDataUrl,
-          'PNG',
-          pageMargin,
-          pageMargin,
-          usablePageWidth,
-          pageImgHeight
-        );
-
-        sourceY += sourceHeight;
-        remainingHeight -= sourceHeight;
-        if (remainingHeight > 0) {
-          pdf.addPage();
-        }
-      }
-
-      const pdfBlob = pdf.output('blob');
-      const fileName = `audit_report_${vaultId}_${auditJob?.id || 'job'}.pdf`;
+      const fileName = `audit_report_${safeName}_${auditJob?.id || 'job'}.pdf`;
       const url = URL.createObjectURL(pdfBlob);
       const a = document.createElement('a');
       a.href = url;
@@ -2063,7 +2031,7 @@ function VaultDetailInner() {
         variant: 'destructive',
       });
     }
-  }, [auditJob, vaultId, toast]);
+  }, [auditJob, vaultId, vault?.name, toast]);
 
   const stopCimProgressTimer = useCallback(() => {
     if (cimProgressTimerRef.current) {
@@ -2097,6 +2065,48 @@ function VaultDetailInner() {
       // ignore polling failures (e.g. 404 if backend has no status endpoint)
     }
   }, [vaultId, cimBackendUrl, stopCimProgressTimer]);
+
+  const startTeaserGeneration = useCallback(async () => {
+    if (!vaultId || !vault || !user) return;
+    setTeaserError(null);
+    setTeaserIsRunning(true);
+    try {
+      teaserAbortControllerRef.current = new AbortController();
+      const report = await runTeaserGeneration(vaultId, vault.name, user.id, teaserAbortControllerRef.current.signal);
+      setTeaserReport(report);
+    } catch (e: any) {
+      if (e?.name !== 'AbortError') {
+        setTeaserError(e?.message || 'Failed to generate teaser');
+      }
+    } finally {
+      setTeaserIsRunning(false);
+      teaserAbortControllerRef.current = null;
+    }
+  }, [vaultId, vault, user]);
+
+  const handleStopTeaser = useCallback(() => {
+    if (teaserAbortControllerRef.current) {
+      teaserAbortControllerRef.current.abort();
+      setTeaserIsRunning(false);
+      setTeaserError('Teaser generation was cancelled');
+      teaserAbortControllerRef.current = null;
+    }
+  }, []);
+
+  const downloadTeaserPdf = useCallback(async (report: TeaserReport) => {
+    const element = document.getElementById('teaser-report-content');
+    if (!element) return;
+    const html2pdf = (await import('html2pdf.js')).default;
+    const safeName = (report.vaultName || 'Teaser').replace(/\s+/g, '_');
+    const options = {
+      margin: 10,
+      filename: `Teaser_${safeName}_${new Date().toISOString().split('T')[0]}.pdf`,
+      image: { type: 'jpeg', quality: 0.98 },
+      html2canvas: { scale: 2, backgroundColor: '#ffffff' },
+      jsPDF: { orientation: 'portrait', unit: 'mm', format: 'a4' },
+    };
+    html2pdf().set(options).from(element).save();
+  }, []);
 
   const downloadCimPdf = useCallback(async (report: CIMReport) => {
     if (!cimPreviewRef.current) return;
@@ -2422,95 +2432,169 @@ function VaultDetailInner() {
               <DialogTrigger asChild>
                 <Button variant="outline" size="sm" className="text-xs sm:text-sm">
                   <FileText className="w-3 h-3 sm:w-4 sm:h-4 mr-1 sm:mr-2" />
-                  Generate CIM
+                  Generate CIM & Teaser
                 </Button>
               </DialogTrigger>
               <DialogContent className="sm:max-w-[900px] max-h-[90vh] flex flex-col overflow-hidden bg-card border-gold/20">
                 <DialogHeader>
                   <div className="flex items-center justify-between gap-3">
                     <div>
-                      <DialogTitle className="font-display text-xl">Generate CIM</DialogTitle>
+                      <DialogTitle className="font-display text-xl">Generate CIM & Teaser</DialogTitle>
                     </div>
                   </div>
                 </DialogHeader>
 
-                <div className="space-y-4 py-2 flex-1 min-h-0 min-w-0 overflow-hidden">
-                  <div className="rounded-lg border border-gold/10 p-3 bg-muted/10">
-                    <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
-                      <div className="min-w-0">
-                        <p className="text-sm text-muted-foreground">
-                          Generates a Confidential Information Memorandum using all documents in this dataroom.
-                        </p>
-                        {cimError && (
-                          <p className="text-sm text-destructive mt-2">{cimError}</p>
-                        )}
-                      </div>
-                      <div className="flex items-center gap-2 flex-shrink-0">
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={startCimGeneration}
-                          disabled={cimIsRunning}
-                        >
-                          {cimIsRunning ? 'Generating...' : cimReport ? 'Generate new' : 'Start'}
-                        </Button>
-                        {cimIsRunning && (
+                <Tabs defaultValue="cim" className="flex-1 min-h-0 min-w-0 overflow-hidden flex flex-col">
+                  <TabsList className="grid w-full grid-cols-2">
+                    <TabsTrigger value="cim">CIM</TabsTrigger>
+                    <TabsTrigger value="teaser">Teaser</TabsTrigger>
+                  </TabsList>
+                  <TabsContent value="cim" className="space-y-4 py-2 flex-1 min-h-0 min-w-0 overflow-hidden mt-2">
+                    <div className="rounded-lg border border-gold/10 p-3 bg-muted/10">
+                      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+                        <div className="min-w-0">
+                          <p className="text-sm text-muted-foreground">
+                            Generates a Confidential Information Memorandum using all documents in this dataroom.
+                          </p>
+                          {cimError && (
+                            <p className="text-sm text-destructive mt-2">{cimError}</p>
+                          )}
+                        </div>
+                        <div className="flex items-center gap-2 flex-shrink-0">
                           <Button
-                            variant="destructive"
+                            variant="outline"
                             size="sm"
-                            onClick={handleStopCim}
-                            title="Stop and terminate CIM generation"
+                            onClick={startCimGeneration}
+                            disabled={cimIsRunning}
                           >
-                            Stop
+                            {cimIsRunning ? 'Generating...' : cimReport ? 'Generate new' : 'Start'}
                           </Button>
+                          {cimIsRunning && (
+                            <Button
+                              variant="destructive"
+                              size="sm"
+                              onClick={handleStopCim}
+                              title="Stop and terminate CIM generation"
+                            >
+                              Stop
+                            </Button>
+                          )}
+                          <Button
+                            variant="gold"
+                            size="sm"
+                            onClick={() => cimReport && downloadCimPdf(cimReport)}
+                            disabled={!cimReport}
+                          >
+                            Download CIM
+                          </Button>
+                        </div>
+                      </div>
+
+                      <div className="mt-4 space-y-2">
+                        <div className="flex items-center justify-between text-sm">
+                          <span className="text-muted-foreground">
+                            Status: <span className="text-foreground">{cimIsRunning ? 'running' : cimReport ? 'completed' : 'not started'}</span>
+                          </span>
+                          <span className="text-muted-foreground">
+                            ETA: <span className="text-foreground">{formatDuration(cimEtaSeconds)}</span>
+                          </span>
+                        </div>
+                        <Progress value={Number(cimProgress)} className="h-2" />
+                        <div className="flex items-center justify-between text-xs text-muted-foreground">
+                          <span>{cimIsRunning ? 'Generating CIM report' : '—'}</span>
+                          <span>{Math.round(Number(cimProgress))}%</span>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="rounded-lg border border-gold/10 overflow-hidden flex-1 min-h-0 min-w-0">
+                      <div className="px-3 py-2 border-b border-gold/10 bg-muted/5">
+                        <p className="text-sm font-medium text-foreground">CIM Preview</p>
+                        <p className="text-xs text-muted-foreground">Preview updates after generation.</p>
+                      </div>
+                      <ScrollArea className="h-[45vh] p-3 max-w-full overflow-hidden rounded-b-lg">
+                        {cimReport ? (
+                          <div
+                            ref={cimPreviewRef}
+                            id="cim-report-content"
+                            className="max-w-none text-slate-800 bg-white rounded p-4 min-h-[200px]"
+                            dangerouslySetInnerHTML={{ __html: cimHtml }}
+                          />
+                        ) : (
+                          <p className="text-sm text-muted-foreground">CIM not generated yet.</p>
                         )}
-                                        <Button
-                          variant="gold"
-                          size="sm"
-                          onClick={() => cimReport && downloadCimPdf(cimReport)}
-                          disabled={!cimReport}
-                        >
-                          Download CIM
-                        </Button>
+                      </ScrollArea>
+                    </div>
+                  </TabsContent>
+                  <TabsContent value="teaser" className="space-y-4 py-2 flex-1 min-h-0 min-w-0 overflow-hidden mt-2">
+                    <div className="rounded-lg border border-gold/10 p-3 bg-muted/10">
+                      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+                        <div className="min-w-0">
+                          <p className="text-sm text-muted-foreground">
+                            Generates a Teaser document using all documents in this dataroom.
+                          </p>
+                          {teaserError && (
+                            <p className="text-sm text-destructive mt-2">{teaserError}</p>
+                          )}
+                        </div>
+                        <div className="flex items-center gap-2 flex-shrink-0">
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={startTeaserGeneration}
+                            disabled={teaserIsRunning}
+                          >
+                            {teaserIsRunning ? 'Generating...' : teaserReport ? 'Generate new' : 'Start'}
+                          </Button>
+                          {teaserIsRunning && (
+                            <Button
+                              variant="destructive"
+                              size="sm"
+                              onClick={handleStopTeaser}
+                              title="Stop and terminate Teaser generation"
+                            >
+                              Stop
+                            </Button>
+                          )}
+                          <Button
+                            variant="gold"
+                            size="sm"
+                            onClick={() => teaserReport && downloadTeaserPdf(teaserReport)}
+                            disabled={!teaserReport}
+                          >
+                            Download Teaser
+                          </Button>
+                        </div>
+                      </div>
+
+                      <div className="mt-4 space-y-2">
+                        <div className="flex items-center justify-between text-sm">
+                          <span className="text-muted-foreground">
+                            Status: <span className="text-foreground">{teaserIsRunning ? 'running' : teaserReport ? 'completed' : 'not started'}</span>
+                          </span>
+                        </div>
                       </div>
                     </div>
 
-                    <div className="mt-4 space-y-2">
-                      <div className="flex items-center justify-between text-sm">
-                        <span className="text-muted-foreground">
-                          Status: <span className="text-foreground">{cimIsRunning ? 'running' : cimReport ? 'completed' : 'not started'}</span>
-                        </span>
-                        <span className="text-muted-foreground">
-                          ETA: <span className="text-foreground">{formatDuration(cimEtaSeconds)}</span>
-                        </span>
+                    <div className="rounded-lg border border-gold/10 overflow-hidden flex-1 min-h-0 min-w-0">
+                      <div className="px-3 py-2 border-b border-gold/10 bg-muted/5">
+                        <p className="text-sm font-medium text-foreground">Teaser Preview</p>
+                        <p className="text-xs text-muted-foreground">Preview updates after generation.</p>
                       </div>
-                      <Progress value={Number(cimProgress)} className="h-2" />
-                      <div className="flex items-center justify-between text-xs text-muted-foreground">
-                        <span>{cimIsRunning ? 'Generating CIM report' : '—'}</span>
-                        <span>{Math.round(Number(cimProgress))}%</span>
-                      </div>
+                      <ScrollArea className="h-[45vh] p-3 max-w-full overflow-hidden rounded-b-lg">
+                        {teaserReport ? (
+                          <div
+                            id="teaser-report-content"
+                            className="max-w-none text-slate-800 bg-white rounded p-4 min-h-[200px]"
+                            dangerouslySetInnerHTML={{ __html: getFormattedTeaser(teaserReport) }}
+                          />
+                        ) : (
+                          <p className="text-sm text-muted-foreground">Teaser not generated yet.</p>
+                        )}
+                      </ScrollArea>
                     </div>
-                  </div>
-
-                  <div className="rounded-lg border border-gold/10 overflow-hidden flex-1 min-h-0 min-w-0">
-                    <div className="px-3 py-2 border-b border-gold/10 bg-muted/5">
-                      <p className="text-sm font-medium text-foreground">CIM Preview</p>
-                      <p className="text-xs text-muted-foreground">Preview updates after generation.</p>
-                    </div>
-                    <ScrollArea className="h-[45vh] p-3 max-w-full overflow-hidden rounded-b-lg">
-                      {cimReport ? (
-                        <div
-                          ref={cimPreviewRef}
-                          id="cim-report-content"
-                          className="max-w-none text-slate-800 bg-white rounded p-4 min-h-[200px]"
-                          dangerouslySetInnerHTML={{ __html: cimHtml }}
-                        />
-                      ) : (
-                        <p className="text-sm text-muted-foreground">CIM not generated yet.</p>
-                      )}
-                    </ScrollArea>
-                  </div>
-                </div>
+                  </TabsContent>
+                </Tabs>
               </DialogContent>
             </Dialog>
 
@@ -3009,15 +3093,15 @@ function VaultDetailInner() {
           setMoveDestinationVaultId(null);
         }
       }}>
-        <DialogContent className="bg-card border-gold/20 sm:max-w-lg">
-          <DialogHeader>
+        <DialogContent className="bg-card border-gold/20 sm:max-w-lg max-h-[90vh] flex flex-col overflow-hidden">
+          <DialogHeader className="flex-shrink-0">
             <DialogTitle className="font-display text-xl">Move to</DialogTitle>
           </DialogHeader>
-          <div className="space-y-4 mt-4">
-            <p className="text-sm text-muted-foreground">Move {selectedCount} item(s) to:</p>
+          <div className="flex flex-col flex-1 min-h-0 overflow-hidden space-y-4 mt-2">
+            <p className="text-sm text-muted-foreground flex-shrink-0">Move {selectedCount} item(s) to:</p>
 
             {/* Vault selector */}
-            <div className="space-y-2">
+            <div className="space-y-2 flex-shrink-0">
               <label className="text-sm font-medium">Dataroom</label>
               <select
                 value={moveDestinationVaultId ?? vaultId ?? ''}
@@ -3041,10 +3125,10 @@ function VaultDetailInner() {
               </select>
             </div>
 
-            {/* Folder destination */}
-            <div className="space-y-2">
-              <label className="text-sm font-medium">Destination folder</label>
-              <div className="max-h-48 overflow-y-auto space-y-1 border rounded-md p-1">
+            {/* Folder destination - scrollable, buttons stay visible */}
+            <div className="flex flex-col flex-1 min-h-0 space-y-2">
+              <label className="text-sm font-medium flex-shrink-0">Destination folder</label>
+              <div className="flex-1 min-h-0 overflow-y-auto space-y-1 border rounded-md p-1 overscroll-contain">
                 <label className="flex items-center gap-2 p-2 rounded hover:bg-muted/30 cursor-pointer">
                   <input
                     type="radio"
@@ -3086,7 +3170,7 @@ function VaultDetailInner() {
               </div>
             </div>
 
-            <div className="flex gap-2 justify-end pt-2">
+            <div className="flex gap-2 justify-end pt-2 flex-shrink-0 border-t pt-4 mt-2">
               <Button variant="outline" onClick={() => { setIsMoveDialogOpen(false); setMoveDestinationId(null); setMoveDestinationVaultId(null); }}>
                 Cancel
               </Button>

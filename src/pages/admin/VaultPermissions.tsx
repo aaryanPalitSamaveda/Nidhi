@@ -94,6 +94,8 @@ export default function VaultPermissions() {
     }
   }, [vaultId]);
 
+  const [clientUser, setClientUser] = useState<{ email: string; full_name: string | null } | null>(null);
+
   const fetchVaultInfo = async () => {
     if (!vaultId) return;
     
@@ -106,6 +108,17 @@ export default function VaultPermissions() {
 
       if (error) throw error;
       setVault(data);
+
+      if (data?.client_id) {
+        const { data: profile } = await supabase
+          .from('profiles')
+          .select('email, full_name')
+          .eq('id', data.client_id)
+          .single();
+        setClientUser(profile || null);
+      } else {
+        setClientUser(null);
+      }
     } catch (error) {
       console.error('Error fetching vault:', error);
       toast({
@@ -283,9 +296,9 @@ export default function VaultPermissions() {
     }
   };
 
-  // Get users that don't already have permissions
+  // Get users that don't already have permissions (exclude client_id - they have full access via vault setting)
   const availableUsers = allUsers.filter(
-    (user) => !permissions.some((p) => p.user_id === user.id)
+    (u) => !permissions.some((p) => p.user_id === u.id) && u.id !== vault?.client_id
   );
 
   if (!isAdmin) {
@@ -426,6 +439,36 @@ export default function VaultPermissions() {
             </Dialog>
           </div>
         </div>
+
+        {clientUser && vault?.client_id && (
+          <div className="mb-6 p-4 rounded-lg bg-amber-500/10 border border-amber-500/30 text-sm">
+            <p className="font-medium text-amber-800 dark:text-amber-200">
+              Designated Client (full access): {clientUser.email}
+            </p>
+            <p className="text-muted-foreground mt-1">
+              This user has full access via the dataroom&apos;s Client setting. They won&apos;t appear in the list below.
+            </p>
+            <Button
+              variant="outline"
+              size="sm"
+              className="mt-2"
+              onClick={async () => {
+                if (!vaultId) return;
+                try {
+                  const { error } = await supabase.from('vaults').update({ client_id: null }).eq('id', vaultId);
+                  if (error) throw error;
+                  setVault((v) => (v ? { ...v, client_id: null } : null));
+                  setClientUser(null);
+                  toast({ title: 'Client removed', description: 'The designated client has been removed. Add them via the list below if they still need access.' });
+                } catch (e: any) {
+                  toast({ title: 'Error', description: e?.message || 'Failed to remove client', variant: 'destructive' });
+                }
+              }}
+            >
+              Remove Client (revoke their access)
+            </Button>
+          </div>
+        )}
 
         {/* Permissions List */}
         {loading ? (
