@@ -1,1 +1,6 @@
-project_id = "moiryxusrbfmktrhsotq"
+# Must match VITE_SUPABASE_PROJECT_ID / your .env - frontend calls this project
+project_id = "iqwqgamoiuejsauisfvf"
+
+# Public auditor - no auth required (called from /auditor page with anon key)
+[functions.auditor-public]
+verify_jwt = false

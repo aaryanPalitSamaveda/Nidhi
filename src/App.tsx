@@ -5,7 +5,6 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter, Routes, Route } from "react-router-dom";
 import { AuthProvider, useAuth } from "@/contexts/AuthContext";
-
 import ChatWidget from "@/components/ChatWidget/ChatWidget";
 
 const Index = lazy(() => import("./pages/Index"));
@@ -15,8 +14,10 @@ const AdminUsers = lazy(() => import("./pages/admin/Users"));
 const AdminVaults = lazy(() => import("./pages/admin/Vaults"));
 const VaultDetail = lazy(() => import("./pages/admin/VaultDetail"));
 const VaultPermissions = lazy(() => import("./pages/admin/VaultPermissions"));
+const AuditorSessions = lazy(() => import("./pages/admin/AuditorSessions"));
 const ClientVault = lazy(() => import("./pages/client/Vault"));
 const DocumentViewer = lazy(() => import("./pages/DocumentViewer"));
+const Auditor = lazy(() => import("./pages/Auditor"));
 const Settings = lazy(() => import("./pages/Settings"));
 const NotFound = lazy(() => import("./pages/NotFound"));
 
@@ -50,9 +51,11 @@ const App = () => (
               <Route path="/admin/vaults" element={<AdminVaults />} />
               <Route path="/admin/vaults/:vaultId" element={<VaultDetail />} />
               <Route path="/admin/vaults/:vaultId/permissions" element={<VaultPermissions />} />
+              <Route path="/admin/auditor" element={<AuditorSessions />} />
               <Route path="/vault" element={<ClientVault />} />
               <Route path="/vault/:vaultId" element={<ClientVault />} />
               <Route path="/document/:documentId" element={<DocumentViewer />} />
+              <Route path="/auditor" element={<Auditor />} />
               <Route path="/settings" element={<Settings />} />
               <Route path="*" element={<NotFound />} />
             </Routes>

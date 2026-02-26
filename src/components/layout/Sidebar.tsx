@@ -22,6 +22,7 @@ const adminNavItems = [
   { icon: LayoutDashboard, label: 'Dashboard', href: '/dashboard' },
   { icon: Users, label: 'Users', href: '/admin/users' },
   { icon: FolderLock, label: 'Datarooms', href: '/admin/vaults' },
+  { icon: FileText, label: 'Audit Agent', href: '/admin/auditor' },
   { icon: Settings, label: 'Settings', href: '/settings' },
 ];
 

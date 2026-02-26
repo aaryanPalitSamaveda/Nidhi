@@ -846,9 +846,13 @@ try {
       auth: { persistSession: false },
     });
 
+    // Allow service role (internal calls from auditor-public)
+    const isServiceRole = token === serviceRoleKey;
+    let userId: string | null = null;
+
+    if (!isServiceRole) {
     // Decode JWT to extract user ID (JWT payload is base64url encoded)
     console.log("=== DECODING JWT ===");
-    let userId: string | null = null;
     try {
       const parts = token.split('.');
       if (parts.length !== 3) {
@@ -889,6 +893,14 @@ try {
     if (roleErr) return jsonResponse({ error: `Role check failed: ${roleErr.message}` }, 403);
     const isAdmin = (roleRows ?? []).some((r: any) => r.role === "admin");
     if (!isAdmin) return jsonResponse({ error: "Admin only" }, 403);
+    } else {
+      // Service role: get first admin for created_by
+      const { data: adminRows } = await supabaseAdmin.from("user_roles").select("user_id").eq("role", "admin").limit(1);
+      userId = adminRows?.[0]?.user_id ?? null;
+      if (!userId) return jsonResponse({ error: "No admin user for service role" }, 500);
+    }
+
+    const effectiveUserId = userId;
 
     const body = await readRequestBody(req);
     if (!body?.action) return jsonResponse({ error: "Missing body.action" }, 400);
@@ -902,7 +914,7 @@ try {
         .from("audit_jobs")
         .insert({
           vault_id: vaultId,
-          created_by: user.id,
+          created_by: effectiveUserId,
           status: "queued",
           progress: 0,
           total_files: 0,

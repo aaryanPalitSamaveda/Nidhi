@@ -113,6 +113,13 @@ export default function Index() {
       {/* Footer */}
       <footer className="relative z-10 py-8 text-center text-sm text-muted-foreground">
         <p>© {new Date().getFullYear()} Samaveda Capital. All rights reserved.</p>
+        <p className="mt-2">
+          <Link to="/auditor" className="text-gold hover:underline">
+            Audit Agent
+          </Link>
+          {' — '}
+          <span className="text-muted-foreground/80">Share: https://www.samavedacapital.in/auditor</span>
+        </p>
       </footer>
     </div>
   );
