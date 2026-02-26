@@ -1,0 +1,4 @@
+-- Enable Anonymous Sign-Ins for the public Auditor page (/auditor)
+-- For HOSTED Supabase: You must also enable in Dashboard:
+--   Authentication > Providers > Anonymous sign-ins > Enable
+-- This migration documents the requirement; the actual toggle is in Dashboard for hosted projects.

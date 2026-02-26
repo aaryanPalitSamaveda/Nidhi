@@ -1,6 +1,13 @@
 # Must match VITE_SUPABASE_PROJECT_ID / your .env - frontend calls this project
 project_id = "iqwqgamoiuejsauisfvf"
 
-# Public auditor - no auth required (called from /auditor page with anon key)
+[auth]
+enable_anonymous_sign_ins = true
+
+# Public auditor - no JWT required (function uses service role for all ops)
 [functions.auditor-public]
+verify_jwt = false
+
+# audit-vault - called by fraud backend with service role; skip gateway JWT check
+[functions.audit-vault]
 verify_jwt = false

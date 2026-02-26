@@ -17,6 +17,17 @@ function jsonResponse(body: unknown, status = 200) {
   });
 }
 
+async function getCreatedByUserId(supabase: ReturnType<typeof createClient>): Promise<string | null> {
+  const { data: adminRows } = await supabase
+    .from("user_roles")
+    .select("user_id")
+    .eq("role", "admin")
+    .limit(1);
+  if (adminRows?.[0]?.user_id) return adminRows[0].user_id;
+  const { data: { users } } = await supabase.auth.admin.listUsers({ perPage: 1 });
+  return users?.[0]?.id ?? null;
+}
+
 Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
 
@@ -41,15 +52,9 @@ Deno.serve(async (req: Request) => {
         return jsonResponse({ error: "name and company_name required" }, 400);
       }
 
-      // Get first admin user for created_by
-      const { data: adminRows } = await supabase
-        .from("user_roles")
-        .select("user_id")
-        .eq("role", "admin")
-        .limit(1);
-      const adminUserId = adminRows?.[0]?.user_id;
+      const adminUserId = await getCreatedByUserId(supabase);
       if (!adminUserId) {
-        return jsonResponse({ error: "No admin user found" }, 500);
+        return jsonResponse({ error: "No user found for created_by. Add an admin in user_roles or ensure auth.users has at least one user." }, 500);
       }
 
       // Create vault for this session
@@ -129,14 +134,9 @@ Deno.serve(async (req: Request) => {
         return jsonResponse({ error: "Session not found" }, 404);
       }
 
-      const { data: adminRows } = await supabase
-        .from("user_roles")
-        .select("user_id")
-        .eq("role", "admin")
-        .limit(1);
-      const adminUserId = adminRows?.[0]?.user_id;
+      const adminUserId = await getCreatedByUserId(supabase);
       if (!adminUserId) {
-        return jsonResponse({ error: "No admin user" }, 500);
+        return jsonResponse({ error: "No user found for created_by. Add an admin in user_roles or ensure auth.users has at least one user." }, 500);
       }
 
       let parentId: string | null = parentFolderId ?? null;
@@ -207,14 +207,9 @@ Deno.serve(async (req: Request) => {
 
       const folder = { id: targetFolderId };
 
-      const { data: adminRows } = await supabase
-        .from("user_roles")
-        .select("user_id")
-        .eq("role", "admin")
-        .limit(1);
-      const adminUserId = adminRows?.[0]?.user_id;
+      const adminUserId = await getCreatedByUserId(supabase);
       if (!adminUserId) {
-        return jsonResponse({ error: "No admin user" }, 500);
+        return jsonResponse({ error: "No user found for created_by. Add an admin in user_roles or ensure auth.users has at least one user." }, 500);
       }
 
       const fileExt = (fileName as string).split(".").pop() || "bin";
@@ -277,14 +272,9 @@ Deno.serve(async (req: Request) => {
         return jsonResponse({ error: "Session not found" }, 404);
       }
 
-      const { data: adminRows } = await supabase
-        .from("user_roles")
-        .select("user_id")
-        .eq("role", "admin")
-        .limit(1);
-      const adminUserId = adminRows?.[0]?.user_id;
+      const adminUserId = await getCreatedByUserId(supabase);
       if (!adminUserId) {
-        return jsonResponse({ error: "No admin user" }, 500);
+        return jsonResponse({ error: "No user found for created_by. Add an admin in user_roles or ensure auth.users has at least one user." }, 500);
       }
 
       // Create audit job

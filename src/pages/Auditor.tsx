@@ -18,29 +18,32 @@ import logo from '@/assets/samaveda-logo.jpeg';
 import { formatFileSize } from '@/utils/format';
 import { supabase } from '@/integrations/supabase/client';
 
-// Use backend proxy when available (bypasses 401 for public). Else direct Supabase.
-const AUDITOR_PROXY = import.meta.env.VITE_FRAUD_BACKEND_URL
-  ? `${String(import.meta.env.VITE_FRAUD_BACKEND_URL).replace(/\/$/, '')}/api/auditor-proxy`
+// Auditor API via fraud backend when VITE_FRAUD_BACKEND_URL is set. Else direct Supabase.
+const AUDITOR_API = import.meta.env.VITE_FRAUD_BACKEND_URL
+  ? `${String(import.meta.env.VITE_FRAUD_BACKEND_URL).replace(/\/$/, '')}/api/auditor`
   : null;
 
 async function auditorInvoke(body: Record<string, unknown>) {
-  if (AUDITOR_PROXY) {
-    const payload = {
-      ...body,
-      _supabaseUrl: import.meta.env.VITE_SUPABASE_URL,
-      _anonKey: import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY,
-    };
-    const res = await fetch(AUDITOR_PROXY, {
+  if (AUDITOR_API) {
+    const res = await fetch(AUDITOR_API, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
+      body: JSON.stringify(body),
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error((data as { error?: string }).error || `Request failed: ${res.status}`);
     return data as Record<string, unknown>;
   }
   const { data, error } = await supabase.functions.invoke('auditor-public', { body });
-  if (error) throw new Error(error.message || 'Request failed');
+  if (error) {
+    let msg = error.message || 'Request failed';
+    try {
+      const err = error as { context?: { json?: () => Promise<{ error?: string }> } };
+      const errBody = err.context?.json ? await err.context.json() : null;
+      if (errBody?.error) msg = errBody.error;
+    } catch (_) {}
+    throw new Error(msg);
+  }
   return (data ?? {}) as Record<string, unknown>;
 }
 
@@ -85,6 +88,7 @@ export default function Auditor() {
   const [name, setName] = useState('');
   const [companyName, setCompanyName] = useState('');
   const [session, setSession] = useState<AuditorSession | null>(null);
+  const [authReady, setAuthReady] = useState(false);
   const [documents, setDocuments] = useState<DocInfo[]>([]);
   const [folders, setFolders] = useState<FolderInfo[]>([]);
   const [currentFolderId, setCurrentFolderId] = useState<string | null>(null);
@@ -99,6 +103,39 @@ export default function Auditor() {
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const { toast } = useToast();
 
+  // Same as dataroom: ensure we have a valid session (JWT) for Edge Function calls.
+  // Anonymous sign-in gives us a JWT without requiring login.
+  const [authError, setAuthError] = useState<string | null>(null);
+  useEffect(() => {
+    let mounted = true;
+    (async () => {
+      const { data: { session: existing } } = await supabase.auth.getSession();
+      if (existing && mounted) {
+        setAuthReady(true);
+        return;
+      }
+      const { error } = await supabase.auth.signInAnonymously();
+      if (mounted) {
+        setAuthReady(true);
+        if (error) {
+          setAuthError('Anonymous sign-in is required. Enable it in Supabase Dashboard → Authentication → Providers → Anonymous sign-ins.');
+        }
+      }
+    })();
+    return () => { mounted = false; };
+  }, []);
+
+  const resetSession = useCallback(() => {
+    sessionStorage.removeItem('nidhi:auditor:session');
+    setSession(null);
+    setStep('form');
+    setDocuments([]);
+    setFolders([]);
+    setCurrentFolderId(null);
+    setAuditJob(null);
+    setAuditError(null);
+  }, []);
+
   const fetchStatus = useCallback(async () => {
     if (!session?.sessionId) return;
     try {
@@ -106,10 +143,14 @@ export default function Auditor() {
       if (data.documents) setDocuments(data.documents as DocInfo[]);
       if (data.folders) setFolders(data.folders as FolderInfo[]);
       if (data.auditJob) setAuditJob(data.auditJob as AuditJob);
-    } catch (e) {
-      console.warn('Status fetch failed:', e);
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      console.warn('Status fetch failed:', msg);
+      if (msg.includes('Session not found') || msg.includes('404')) {
+        resetSession();
+      }
     }
-  }, [session?.sessionId]);
+  }, [session?.sessionId, resetSession]);
 
   useEffect(() => {
     const stored = sessionStorage.getItem('nidhi:auditor:session');
@@ -118,14 +159,13 @@ export default function Auditor() {
         const s = JSON.parse(stored);
         setSession(s);
         setStep('upload');
-        fetchStatus();
       } catch (_) {}
     }
   }, []);
 
   useEffect(() => {
-    if (session && step === 'upload') fetchStatus();
-  }, [session, step, fetchStatus]);
+    if (authReady && session && step === 'upload') fetchStatus();
+  }, [authReady, session, step, fetchStatus]);
 
   const handleSubmitForm = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -250,12 +290,17 @@ export default function Auditor() {
 
     try {
       const rootFolderName = `Folder ${new Date().toLocaleDateString()} ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
-      const dataRoot = await auditorInvoke({
-        action: 'create-folder',
-        sessionId: session.sessionId,
-        folderName: rootFolderName,
-        parentFolderId: rootId || undefined,
-      });
+      let dataRoot: Record<string, unknown>;
+      try {
+        dataRoot = await auditorInvoke({
+          action: 'create-folder',
+          sessionId: session.sessionId,
+          folderName: rootFolderName,
+          parentFolderId: rootId || undefined,
+        });
+      } catch (e) {
+        throw new Error(`Create folder failed: ${e instanceof Error ? e.message : String(e)}`);
+      }
       if (dataRoot.error) throw new Error(String(dataRoot.error));
       const createdRootId = dataRoot.folderId as string;
       if (!createdRootId) throw new Error('Failed to create root folder');
@@ -267,14 +312,18 @@ export default function Auditor() {
         const parentPath = parts.slice(0, -1).join('/');
         const parentId = pathToFolderId.get(parentPath) ?? pathToFolderId.get('') ?? rootId;
 
-        const data = await auditorInvoke({
-          action: 'create-folder',
-          sessionId: session.sessionId,
-          folderName,
-          parentFolderId: parentId,
-        });
-        if (data.error) throw new Error(String(data.error));
-        if (data.folderId) pathToFolderId.set(folderPath, data.folderId as string);
+        try {
+          const data = await auditorInvoke({
+            action: 'create-folder',
+            sessionId: session.sessionId,
+            folderName,
+            parentFolderId: parentId,
+          });
+          if (data.error) throw new Error(String(data.error));
+          if (data.folderId) pathToFolderId.set(folderPath, data.folderId as string);
+        } catch (e) {
+          throw new Error(`Create folder "${folderName}" failed: ${e instanceof Error ? e.message : String(e)}`);
+        }
       }
 
       const ids: string[] = [];
@@ -291,26 +340,34 @@ export default function Auditor() {
         const folderPath = parts.length > 1 ? parts.slice(0, -1).join('/') : '';
         const folderId = pathToFolderId.get(folderPath) ?? pathToFolderId.get('') ?? rootId;
 
-        const data = await auditorInvoke({
-          action: 'upload-url',
-          sessionId: session.sessionId,
-          fileName: file.name,
-          fileType: file.type,
-          fileSize: file.size,
-          folderId: folderId || undefined,
-        });
-        if (data.error) throw new Error(String(data.error));
-        setUploadProgress((p) => p.map((u) => (u.id === id ? { ...u, progress: 30 } : u)));
-        const uploadRes = await fetch(data.uploadUrl as string, {
-          method: 'PUT',
-          body: file,
-          headers: { 'Content-Type': file.type || 'application/octet-stream' },
-        });
-        if (!uploadRes.ok) throw new Error('Upload failed');
-        setUploadProgress((p) => p.map((u) => (u.id === id ? { ...u, progress: 100 } : u)));
+        try {
+          const data = await auditorInvoke({
+            action: 'upload-url',
+            sessionId: session.sessionId,
+            fileName: file.name,
+            fileType: file.type,
+            fileSize: file.size,
+            folderId: folderId || undefined,
+          });
+          if (data.error) throw new Error(String(data.error));
+          setUploadProgress((p) => p.map((u) => (u.id === id ? { ...u, progress: 30 } : u)));
+          const uploadRes = await fetch(data.uploadUrl as string, {
+            method: 'PUT',
+            body: file,
+            headers: { 'Content-Type': file.type || 'application/octet-stream' },
+          });
+          if (!uploadRes.ok) throw new Error(`Upload failed for "${file.name}"`);
+          setUploadProgress((p) => p.map((u) => (u.id === id ? { ...u, progress: 100 } : u)));
+        } catch (e) {
+          throw new Error(`Upload "${file.name}" failed: ${e instanceof Error ? e.message : String(e)}`);
+        }
       }
 
-      await fetchStatus();
+      try {
+        await fetchStatus();
+      } catch (e) {
+        throw new Error(`Refresh failed: ${e instanceof Error ? e.message : String(e)}`);
+      }
       const folderName = filesWithPaths[0]?.relativePath?.split('/')[0] || 'Folder';
       toast({ title: 'Uploaded', description: `"${folderName}" is uploaded.` });
       setTimeout(() => setUploadProgress([]), 1200);
@@ -355,7 +412,11 @@ export default function Auditor() {
       try {
         const data = await auditorInvoke({ action: 'run-audit-batch', jobId: auditJob.id });
         if (data?.job) setAuditJob(data.job as AuditJob);
-      } catch (_) {}
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        console.warn('[auditor] run-audit-batch failed:', msg);
+        setAuditError(msg);
+      }
     };
     pollRef.current = setInterval(runBatch, 4000);
     runBatch();
@@ -390,17 +451,6 @@ export default function Auditor() {
     a.click();
     URL.revokeObjectURL(url);
     toast({ title: 'Downloaded', description: 'Report saved.' });
-  };
-
-  const resetSession = () => {
-    sessionStorage.removeItem('nidhi:auditor:session');
-    setSession(null);
-    setStep('form');
-    setDocuments([]);
-    setFolders([]);
-    setCurrentFolderId(null);
-    setAuditJob(null);
-    setAuditError(null);
   };
 
   const rootFolderId = session?.folderId ?? null;
@@ -442,7 +492,18 @@ export default function Auditor() {
       </header>
 
       <main className="relative z-10 max-w-2xl mx-auto px-6 py-12">
-        {step === 'form' && (
+        {!authReady && (
+          <div className="flex flex-col items-center justify-center py-24 gap-4">
+            <Loader2 className="w-8 h-8 animate-spin text-gold" />
+            <p className="text-sm text-muted-foreground">Preparing...</p>
+          </div>
+        )}
+        {authReady && authError && (
+          <div className="rounded-xl border border-destructive/50 p-6 bg-destructive/10 text-center">
+            <p className="text-destructive font-medium">{authError}</p>
+          </div>
+        )}
+        {authReady && !authError && step === 'form' && (
           <div className="space-y-8">
             <div className="text-center">
               <h2 className="font-display text-3xl font-bold text-foreground mb-2">Document Audit</h2>
@@ -476,7 +537,7 @@ export default function Auditor() {
           </div>
         )}
 
-        {step === 'upload' && session && (
+        {authReady && !authError && step === 'upload' && session && (
           <div className="space-y-8">
             <div className="rounded-lg border border-gold/20 p-4 bg-card/50">
               <p className="text-sm text-muted-foreground">
