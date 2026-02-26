@@ -1310,8 +1310,9 @@ function VaultDetailInner() {
   const buildFolderTree = (items: { id: string; name: string; parent_id: string | null }[]) => {
     const result: { id: string; name: string; parent_id: string | null; path: string }[] = [];
     const add = (f: { id: string; name: string; parent_id: string | null }, prefix: string) => {
-      result.push({ ...f, path: prefix ? `${prefix} / ${f.name}` : f.name });
-      items.filter((c) => c.parent_id === f.id).forEach((c) => add(c, result[result.length - 1].path));
+      const path = prefix ? `${prefix} / ${f.name}` : f.name;
+      result.push({ ...f, path });
+      items.filter((c) => c.parent_id === f.id).forEach((c) => add(c, path));
     };
     items.filter((f) => !f.parent_id).forEach((r) => add(r, ''));
     return result;
