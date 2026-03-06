@@ -2,7 +2,8 @@ import { useEffect, useState } from 'react';
 import { DashboardLayout } from '@/components/layout/DashboardLayout';
 import { supabase } from '@/integrations/supabase/client';
 import { Button } from '@/components/ui/button';
-import { FileText, User, Building2, Calendar, File, Download } from 'lucide-react';
+import { FileText, User, Building2, Calendar, File, Download, Trash2 } from 'lucide-react';
+import { useToast } from '@/hooks/use-toast';
 import { formatFileSize } from '@/utils/format';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -38,26 +39,55 @@ interface AuditJob {
 }
 
 export default function AuditorSessions() {
+  const { toast } = useToast();
   const [sessions, setSessions] = useState<AuditorSession[]>([]);
   const [loading, setLoading] = useState(true);
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [sessionDetails, setSessionDetails] = useState<Record<string, { docs: DocInfo[]; job: AuditJob | null }>>({});
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+
+  const fetchSessions = async () => {
+    const { data, error } = await supabase
+      .from('auditor_sessions')
+      .select('id, name, company_name, vault_id, created_at')
+      .order('created_at', { ascending: false });
+    if (error) {
+      console.error(error);
+      return;
+    }
+    setSessions(data || []);
+  };
 
   useEffect(() => {
-    const fetch = async () => {
-      const { data, error } = await supabase
-        .from('auditor_sessions')
-        .select('id, name, company_name, vault_id, created_at')
-        .order('created_at', { ascending: false });
-      if (error) {
-        console.error(error);
-        return;
-      }
-      setSessions(data || []);
-      setLoading(false);
-    };
-    fetch();
+    fetchSessions().finally(() => setLoading(false));
   }, []);
+
+  const handleDeleteSession = async (session: AuditorSession) => {
+    if (!confirm(`Delete audit session "${session.name}" (${session.company_name})? This will permanently remove the dataroom, all documents, and audit reports.`)) return;
+    setDeletingId(session.id);
+    try {
+      const { data: docs } = await supabase.from('documents').select('file_path').eq('vault_id', session.vault_id);
+      const paths = (docs || []).map((d) => d.file_path).filter(Boolean);
+      if (paths.length > 0) {
+        await supabase.storage.from('documents').remove(paths);
+      }
+      const { error } = await supabase.from('vaults').delete().eq('id', session.vault_id);
+      if (error) throw error;
+      setSessions((prev) => prev.filter((s) => s.id !== session.id));
+      setSessionDetails((prev) => {
+        const next = { ...prev };
+        delete next[session.id];
+        return next;
+      });
+      if (expandedId === session.id) setExpandedId(null);
+      toast({ title: 'Session deleted', description: `"${session.company_name}" audit session has been removed.` });
+    } catch (e: any) {
+      console.error(e);
+      toast({ title: 'Error', description: e?.message || 'Failed to delete session', variant: 'destructive' });
+    } finally {
+      setDeletingId(null);
+    }
+  };
 
   const loadDetails = async (session: AuditorSession) => {
     if (sessionDetails[session.id]) return;
@@ -145,7 +175,25 @@ export default function AuditorSessions() {
                           {new Date(session.created_at).toLocaleString()}
                         </p>
                       </div>
-                      <span className="text-xs text-gold">View details</span>
+                      <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="text-destructive hover:text-destructive hover:bg-destructive/10"
+                          onClick={() => handleDeleteSession(session)}
+                          disabled={deletingId === session.id}
+                        >
+                          {deletingId === session.id ? (
+                            <span className="text-xs">Deleting...</span>
+                          ) : (
+                            <>
+                              <Trash2 className="w-4 h-4 mr-1" />
+                              Delete
+                            </>
+                          )}
+                        </Button>
+                        <span className="text-xs text-gold">View details</span>
+                      </div>
                     </div>
                   </CollapsibleTrigger>
                   <CollapsibleContent>

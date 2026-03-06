@@ -20,13 +20,20 @@ Deploy using Supabase CLI (example):
 - `supabase functions deploy audit-vault`
 
 ### 3) Set function secrets (required for AI)
-Set these secrets in Supabase (Edge Functions secrets):
-- `OPENAI_API_KEY`: your ChatGPT/OpenAI API key
+Set at least one AI provider in Supabase (Edge Functions secrets). **OpenAI is preferred when set.**
 
-Optional:
-- `OPENAI_BASE_URL`: defaults to `https://api.openai.com`
-- `OPENAI_MODEL_TEXT`: defaults to `gpt-4o-mini`
-- `OPENAI_MODEL_VISION`: defaults to `gpt-4o-mini`
+**OpenAI** (recommended):
+- `OPENAI_API_KEY`: your ChatGPT/OpenAI API key
+- Optional: `OPENAI_BASE_URL` (default `https://api.openai.com`), `OPENAI_MODEL_TEXT`, `OPENAI_MODEL_VISION` (default `gpt-4o-mini`)
+
+**Claude** (fallback when OpenAI not set):
+- `CLAUDE_API_KEY`: your Anthropic API key
+- Optional: `CLAUDE_MODEL_TEXT`, `CLAUDE_MODEL_VISION` (default `claude-sonnet-4-6`)
+
+Example:
+```bash
+supabase secrets set OPENAI_API_KEY=sk-your-key-here
+```
 
 **Note**: The following are automatically injected by Supabase into Edge Functions (you don't need to set them manually):
 - `SUPABASE_URL`

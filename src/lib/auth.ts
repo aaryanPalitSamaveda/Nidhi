@@ -45,6 +45,18 @@ export async function signOut() {
   return { error };
 }
 
+export async function resetPasswordForEmail(email: string) {
+  const { data, error } = await supabase.auth.resetPasswordForEmail(email, {
+    redirectTo: `${window.location.origin}/reset-password`,
+  });
+  return { data, error };
+}
+
+export async function updatePassword(newPassword: string) {
+  const { data, error } = await supabase.auth.updateUser({ password: newPassword });
+  return { data, error };
+}
+
 export async function getUserRole(userId: string): Promise<UserRole> {
   try {
     const { data, error } = await supabase

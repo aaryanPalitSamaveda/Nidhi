@@ -6,11 +6,11 @@
 // - SUPABASE_URL
 // - SUPABASE_SERVICE_ROLE_KEY
 // - SUPABASE_ANON_KEY (for token validation)
-// - OPENAI_API_KEY
-// Optional:
-// - OPENAI_BASE_URL (default https://api.openai.com)
-// - OPENAI_MODEL_TEXT (default gpt-4o-mini)
-// - OPENAI_MODEL_VISION (default gpt-4o-mini)
+// AI provider (at least one required for audit):
+// - OPENAI_API_KEY (OpenAI API key) - preferred when set
+// - CLAUDE_API_KEY (Anthropic API key for Claude)
+// Optional OpenAI: OPENAI_BASE_URL (default https://api.openai.com), OPENAI_MODEL_TEXT, OPENAI_MODEL_VISION (default gpt-4o-mini)
+// Optional Claude: CLAUDE_MODEL_TEXT, CLAUDE_MODEL_VISION (default claude-sonnet-4-6)
 // - FRAUD_BACKEND_URL (for forensic analysis merge, e.g. https://your-backend.com)
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.49.1";
@@ -109,10 +109,26 @@ function getBearerToken(req: Request): string | null {
   return m?.[1] ?? null;
 }
 
+function stripMarkdownJson(input: string): string {
+  const s = input.trim();
+  // Strip ```json ... ``` or ``` ... ``` - extract content between fences
+  const m = s.match(/```(?:json)?\s*\n?([\s\S]*)/);
+  if (m) return m[1].replace(/\n?```\s*$/, "").trim();
+  return s;
+}
+
 function safeJsonParse(input: string): any {
   try {
     return JSON.parse(input);
   } catch {
+    const stripped = stripMarkdownJson(input);
+    if (stripped !== input) {
+      try {
+        return JSON.parse(stripped);
+      } catch {
+        return null;
+      }
+    }
     return null;
   }
 }
@@ -287,6 +303,109 @@ function validateCitedJson(input: any, snippets: Array<{ id: string; text: strin
   };
 }
 
+const ANTHROPIC_API = "https://api.anthropic.com/v1/messages";
+
+async function claudeChatJson(args: {
+  apiKey: string;
+  model: string;
+  system: string;
+  user: string;
+  maxTokens?: number;
+}): Promise<any> {
+  const { apiKey, model, system, user, maxTokens = 1200 } = args;
+  const res = await fetch(ANTHROPIC_API, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-api-key": apiKey,
+      "anthropic-version": "2023-06-01",
+    },
+    body: JSON.stringify({
+      model,
+      max_tokens: maxTokens,
+      system: `${system}\n\nYou must respond with valid JSON only. No markdown, no code blocks.`,
+      messages: [{ role: "user", content: user }],
+    }),
+  });
+
+  if (!res.ok) {
+    const txt = await res.text().catch(() => "");
+    const errorMsg = `Claude error: ${res.status} ${res.statusText} ${txt}`.slice(0, 800);
+    console.error("Claude API error:", errorMsg);
+    if (res.status === 429) {
+      throw new Error("Claude rate limit exceeded. Please wait a moment and retry.");
+    }
+    throw new Error(errorMsg);
+  }
+
+  const json = await res.json().catch(() => null);
+  const textBlock = json?.content?.find((b: any) => b.type === "text");
+  const content = textBlock?.text ?? "";
+  if (!content) {
+    console.error("Claude response structure:", JSON.stringify(json, null, 2).substring(0, 500));
+    throw new Error("Claude returned empty response");
+  }
+
+  const parsed = safeJsonParse(content);
+  if (!parsed) {
+    console.error("Failed to parse Claude content as JSON. Content:", content.substring(0, 500));
+    if (content.trimStart().startsWith('{"error":') || content.trimStart().startsWith('{"message":"rate limit')) {
+      throw new Error(`Claude API issue: ${content.substring(0, 200)}`);
+    }
+    throw new Error(`Claude returned non-JSON response (may be truncated). Content preview: ${content.substring(0, 200)}`);
+  }
+  return parsed;
+}
+
+async function claudeVisionOcrJson(args: {
+  apiKey: string;
+  model: string;
+  system: string;
+  prompt: string;
+  imageBytes: Uint8Array;
+  mimeType: string;
+  maxTokens?: number;
+}): Promise<any> {
+  const { apiKey, model, system, prompt, imageBytes, mimeType, maxTokens = 1200 } = args;
+  const b64 = encodeBase64(imageBytes);
+
+  const res = await fetch(ANTHROPIC_API, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-api-key": apiKey,
+      "anthropic-version": "2023-06-01",
+    },
+    body: JSON.stringify({
+      model,
+      max_tokens: maxTokens,
+      system: `${system}\n\nYou must respond with valid JSON only. No markdown, no code blocks.`,
+      messages: [
+        {
+          role: "user",
+          content: [
+            { type: "image", source: { type: "base64", media_type: mimeType, data: b64 } },
+            { type: "text", text: prompt },
+          ],
+        },
+      ],
+    }),
+  });
+
+  if (!res.ok) {
+    const txt = await res.text().catch(() => "");
+    throw new Error(`Claude vision error: ${res.status} ${res.statusText} ${txt}`.slice(0, 800));
+  }
+
+  const json = await res.json();
+  const textBlock = json?.content?.find((b: any) => b.type === "text");
+  const content = textBlock?.text ?? "";
+  if (!content) throw new Error("Claude vision returned empty response");
+  const parsed = safeJsonParse(content);
+  if (!parsed) throw new Error("Claude vision returned non-JSON response");
+  return parsed;
+}
+
 async function openaiChatJson(args: {
   apiKey: string;
   baseUrl: string;
@@ -319,38 +438,27 @@ async function openaiChatJson(args: {
     const txt = await res.text().catch(() => "");
     const errorMsg = `OpenAI error: ${res.status} ${res.statusText} ${txt}`.slice(0, 800);
     console.error("OpenAI API error:", errorMsg);
-    
-    // Handle rate limiting specifically
     if (res.status === 429) {
-      throw new Error("OpenAI rate limit exceeded. Please wait a moment and the audit will retry automatically.");
+      throw new Error("OpenAI rate limit exceeded. Please wait a moment and retry.");
     }
-    
     throw new Error(errorMsg);
   }
 
-  let json;
-  try {
-    json = await res.json();
-  } catch (e: any) {
-    const text = await res.text().catch(() => "");
-    console.error("Failed to parse OpenAI response as JSON:", text.substring(0, 500));
-    throw new Error(`OpenAI returned invalid JSON: ${e?.message || String(e)}`);
-  }
-
-  const content = json?.choices?.[0]?.message?.content;
+  const json = await res.json().catch(() => null);
+  const content = json?.choices?.[0]?.message?.content ?? "";
   if (!content) {
     console.error("OpenAI response structure:", JSON.stringify(json, null, 2).substring(0, 500));
     throw new Error("OpenAI returned empty response");
   }
-  
+
   const parsed = safeJsonParse(content);
   if (!parsed) {
     console.error("Failed to parse OpenAI content as JSON. Content:", content.substring(0, 500));
-    // Try to extract error message if it's an error response
-    if (content.toLowerCase().includes("error") || content.toLowerCase().includes("rate limit")) {
+    // Only treat as API error if response looks like OpenAI error object, not report content
+    if (content.trimStart().startsWith('{"error":') || content.trimStart().startsWith('{"message":"rate limit')) {
       throw new Error(`OpenAI API issue: ${content.substring(0, 200)}`);
     }
-    throw new Error(`OpenAI returned non-JSON response. Content preview: ${content.substring(0, 200)}`);
+    throw new Error(`OpenAI returned non-JSON response (may be truncated). Content preview: ${content.substring(0, 200)}`);
   }
   return parsed;
 }
@@ -367,7 +475,6 @@ async function openaiVisionOcrJson(args: {
   maxTokens?: number;
 }): Promise<any> {
   const { apiKey, baseUrl, model, system, prompt, imageBytes, mimeType, temperature = 0, maxTokens = 1200 } = args;
-  // Avoid call stack limits on large images; use stdlib base64.
   const b64 = encodeBase64(imageBytes);
   const dataUrl = `data:${mimeType};base64,${b64}`;
 
@@ -401,7 +508,7 @@ async function openaiVisionOcrJson(args: {
   }
 
   const json = await res.json();
-  const content = json?.choices?.[0]?.message?.content;
+  const content = json?.choices?.[0]?.message?.content ?? "";
   if (!content) throw new Error("OpenAI vision returned empty response");
   const parsed = safeJsonParse(content);
   if (!parsed) throw new Error("OpenAI vision returned non-JSON response");
@@ -831,6 +938,11 @@ try {
     const openaiBaseUrl = Deno.env.get("OPENAI_BASE_URL") ?? "https://api.openai.com";
     const openaiModelText = Deno.env.get("OPENAI_MODEL_TEXT") ?? "gpt-4o-mini";
     const openaiModelVision = Deno.env.get("OPENAI_MODEL_VISION") ?? openaiModelText;
+    const claudeKey = Deno.env.get("CLAUDE_API_KEY") ?? "";
+    const claudeModelText = Deno.env.get("CLAUDE_MODEL_TEXT") ?? "claude-sonnet-4-6";
+    const claudeModelVision = Deno.env.get("CLAUDE_MODEL_VISION") ?? claudeModelText;
+    const useOpenAI = !!openaiKey;
+    const useClaude = !useOpenAI && !!claudeKey;
 
     console.log("=== EXTRACTING TOKEN ===");
     const token = getBearerToken(req);
@@ -846,61 +958,78 @@ try {
       auth: { persistSession: false },
     });
 
-    // Allow service role (internal calls from auditor-public)
-    const isServiceRole = token === serviceRoleKey;
+    // Allow service role (internal calls from fraud backend / auditor-public)
+    const trimmedToken = token.trim();
+    const trimmedServiceKey = (serviceRoleKey ?? "").trim();
+    const isServiceRoleExact = trimmedToken === trimmedServiceKey;
+    const apikeyHeader = req.headers.get("apikey") || req.headers.get("Apikey") || "";
+    const isServiceRoleByApikey = apikeyHeader.trim() === trimmedServiceKey;
+    let isServiceRoleByPayload = false;
     let userId: string | null = null;
 
-    if (!isServiceRole) {
-    // Decode JWT to extract user ID (JWT payload is base64url encoded)
-    console.log("=== DECODING JWT ===");
-    try {
-      const parts = token.split('.');
-      if (parts.length !== 3) {
-        throw new Error("Invalid JWT format - expected 3 parts");
+    if (!isServiceRoleExact && !isServiceRoleByApikey) {
+      // Decode JWT - may be service_role (from fraud backend) or user JWT
+      console.log("=== DECODING JWT ===");
+      try {
+        const parts = trimmedToken.split('.');
+        if (parts.length !== 3) {
+          throw new Error("Invalid JWT format - expected 3 parts");
+        }
+        const payloadJson = base64UrlDecode(parts[1]);
+        const payload = JSON.parse(payloadJson);
+        const role = String(payload.role ?? payload.role_name ?? "").toLowerCase();
+        userId = payload.sub || payload.user_id || null;
+        // Service role: role=service_role, or has ref (project ref) without user UUID sub
+        if (role === "service_role") {
+          isServiceRoleByPayload = true;
+        } else if (payload.ref) {
+          // Supabase anon/service JWTs have ref (project ref). User JWTs have sub=UUID.
+          const subStr = typeof payload.sub === "string" ? payload.sub : "";
+          const looksLikeUserUuid = subStr.length >= 36 && /^[0-9a-f-]{36}$/i.test(subStr);
+          if (!looksLikeUserUuid) isServiceRoleByPayload = true;
+        }
+        console.log("Decoded role:", role, "ref:", payload.ref, "user ID:", userId, "isServiceRoleByPayload:", isServiceRoleByPayload);
+      } catch (e: any) {
+        console.error("=== JWT DECODE ERROR ===");
+        console.error("Error:", e?.message);
+        return jsonResponse({ error: `Invalid JWT: Failed to decode - ${e?.message || String(e)}` }, 401);
       }
-      const payloadJson = base64UrlDecode(parts[1]);
-      const payload = JSON.parse(payloadJson);
-      userId = payload.sub || payload.user_id || null;
-      console.log("Decoded user ID:", userId);
-    } catch (e: any) {
-      console.error("=== JWT DECODE ERROR ===");
-      console.error("Error:", e?.message);
-      return jsonResponse({ error: `Invalid JWT: Failed to decode - ${e?.message || String(e)}` }, 401);
     }
 
-    if (!userId) {
+    const isServiceRole = isServiceRoleExact || isServiceRoleByApikey || isServiceRoleByPayload;
+    if (isServiceRole) {
+      userId = null; // service role - no user context needed
+    } else if (!userId) {
       console.error("No user ID in JWT payload");
       return jsonResponse({ error: "Invalid JWT: No user ID in token" }, 401);
     }
 
-    // Verify user exists using admin client
-    console.log("Verifying user:", userId);
-    const { data: userData, error: userErr } = await supabaseAdmin.auth.admin.getUserById(userId);
-    
-    if (userErr || !userData?.user) {
-      console.error("User verification failed:", userErr?.message || "No user data");
-      return jsonResponse({ error: `Invalid JWT: User not found - ${userErr?.message || "Unknown"}` }, 401);
-    }
-    
-    const user = userData.user;
-    console.log("User verified:", user.email, "ID:", user.id);
-
-    const { data: roleRows, error: roleErr } = await supabaseAdmin
-      .from("user_roles")
-      .select("role")
-      .eq("user_id", user.id)
-      .limit(10);
-    if (roleErr) return jsonResponse({ error: `Role check failed: ${roleErr.message}` }, 403);
-    const isAdmin = (roleRows ?? []).some((r: any) => r.role === "admin");
-    if (!isAdmin) return jsonResponse({ error: "Admin only" }, 403);
-    } else {
+    let effectiveUserId: string | null;
+    if (isServiceRole) {
       // Service role: get first admin for created_by
       const { data: adminRows } = await supabaseAdmin.from("user_roles").select("user_id").eq("role", "admin").limit(1);
-      userId = adminRows?.[0]?.user_id ?? null;
-      if (!userId) return jsonResponse({ error: "No admin user for service role" }, 500);
+      effectiveUserId = adminRows?.[0]?.user_id ?? null;
+      if (!effectiveUserId) return jsonResponse({ error: "No admin user for service role" }, 500);
+    } else {
+      // Verify user exists and is admin
+      console.log("Verifying user:", userId);
+      const { data: userData, error: userErr } = await supabaseAdmin.auth.admin.getUserById(userId!);
+      if (userErr || !userData?.user) {
+        console.error("User verification failed:", userErr?.message || "No user data");
+        return jsonResponse({ error: `Invalid JWT: User not found - ${userErr?.message || "Unknown"}` }, 401);
+      }
+      const user = userData.user;
+      console.log("User verified:", user.email, "ID:", user.id);
+      const { data: roleRows, error: roleErr } = await supabaseAdmin
+        .from("user_roles")
+        .select("role")
+        .eq("user_id", user.id)
+        .limit(10);
+      if (roleErr) return jsonResponse({ error: `Role check failed: ${roleErr.message}` }, 403);
+      const isAdmin = (roleRows ?? []).some((r: any) => r.role === "admin");
+      if (!isAdmin) return jsonResponse({ error: "Admin only" }, 403);
+      effectiveUserId = userId;
     }
-
-    const effectiveUserId = userId;
 
     const body = await readRequestBody(req);
     if (!body?.action) return jsonResponse({ error: "Missing body.action" }, 400);
@@ -1005,9 +1134,9 @@ try {
     }
 
     if (body.action === "run") {
-      const { jobId, maxFiles = 5 } = body as RunBody;
+      const { jobId, maxFiles = 2 } = body as RunBody;
       if (!jobId) return jsonResponse({ error: "Missing jobId" }, 400);
-      const batchSize = Math.max(1, Math.min(5, maxFiles));
+      const batchSize = Math.max(1, Math.min(3, maxFiles));
 
       const { data: job, error: jobErr } = await supabaseAdmin
         .from("audit_jobs")
@@ -1037,7 +1166,7 @@ try {
         .limit(batchSize);
       if (pendErr) return jsonResponse({ error: `Failed to load pending files: ${pendErr.message}` }, 500);
 
-      const openaiReady = !!openaiKey;
+      const aiReady = useOpenAI || useClaude;
 
       // Helper function to update progress after each file
       const updateProgress = async (currentFileName?: string) => {
@@ -1158,27 +1287,38 @@ try {
             const text = clampText(extractedText, 25000);
             evidenceSnippets = [{ id: "A", location: "xlsx:csv", text }];
           } else if (effectiveMime?.startsWith("image/") || ["png", "jpg", "jpeg", "webp"].includes(ext)) {
-            if (!openaiReady) {
+            if (!aiReady) {
               evidenceSnippets = [{
                 id: "A",
                 location: "image",
-                text: "[OCR not available: OPENAI_API_KEY not configured]",
+                text: "[OCR not available: OPENAI_API_KEY or CLAUDE_API_KEY not configured]",
               }];
             } else {
-              const ocr = await openaiVisionOcrJson({
-                apiKey: openaiKey,
-                baseUrl: openaiBaseUrl,
-                model: openaiModelVision,
-                system: forensicSystemPrompt(),
-                prompt: [
-                  `Perform OCR for this image and extract key financial identifiers.`,
-                  `Return JSON: { "ocr_text": string, "key_fields": [ { "key": string, "value": string, "quote": string } ] }`,
-                  `Do not hallucinate; only what you can read.`,
-                ].join("\n"),
-                imageBytes: bytes,
-                mimeType: effectiveMime ?? "image/png",
-                maxTokens: 1200,
-              });
+              const ocrPrompt = [
+                `Perform OCR for this image and extract key financial identifiers.`,
+                `Return JSON: { "ocr_text": string, "key_fields": [ { "key": string, "value": string, "quote": string } ] }`,
+                `Do not hallucinate; only what you can read.`,
+              ].join("\n");
+              const ocr = useOpenAI
+                ? await openaiVisionOcrJson({
+                    apiKey: openaiKey,
+                    baseUrl: openaiBaseUrl,
+                    model: openaiModelVision,
+                    system: forensicSystemPrompt(),
+                    prompt: ocrPrompt,
+                    imageBytes: bytes,
+                    mimeType: effectiveMime ?? "image/png",
+                    maxTokens: 1200,
+                  })
+                : await claudeVisionOcrJson({
+                    apiKey: claudeKey,
+                    model: claudeModelVision,
+                    system: forensicSystemPrompt(),
+                    prompt: ocrPrompt,
+                    imageBytes: bytes,
+                    mimeType: effectiveMime ?? "image/png",
+                    maxTokens: 1200,
+                  });
               const ocrText = typeof ocr?.ocr_text === "string" ? ocr.ocr_text : "";
               evidenceSnippets = [{ id: "A", location: "image:ocr", text: clampText(ocrText, 25000) }];
             }
@@ -1207,54 +1347,57 @@ try {
           }
 
           let factsJson: any = null;
-          if (openaiReady) {
-            // Retry logic for OpenAI API calls (handle rate limits and transient errors)
-            let lastError: Error | null = null;
+          if (aiReady) {
+            const provider = useOpenAI ? "OpenAI" : "Claude";
             const maxRetries = 2;
+            let lastError: Error | null = null;
             for (let attempt = 0; attempt <= maxRetries; attempt++) {
               try {
                 if (attempt > 0) {
-                  // Wait before retry (exponential backoff: 2s, 4s)
                   const waitMs = 2000 * attempt;
-                  console.log(`Retrying OpenAI call (attempt ${attempt + 1}/${maxRetries + 1}) after ${waitMs}ms...`);
+                  console.log(`Retrying ${provider} call (attempt ${attempt + 1}/${maxRetries + 1}) after ${waitMs}ms...`);
                   await new Promise(resolve => setTimeout(resolve, waitMs));
                 }
-                
-                factsJson = await openaiChatJson({
-                  apiKey: openaiKey,
-                  baseUrl: openaiBaseUrl,
-                  model: openaiModelText,
-                  system: forensicSystemPrompt(),
-                  user: perFileExtractionPrompt({
-                    fileName: effectiveFileName,
-                    filePath,
-                    fileType: effectiveMime,
-                    evidenceSnippets,
-                  }),
-                  temperature: 0,
-                  maxTokens: 1400,
+
+                const extractionUser = perFileExtractionPrompt({
+                  fileName: effectiveFileName,
+                  filePath,
+                  fileType: effectiveMime,
+                  evidenceSnippets,
                 });
-                
-                // Success - break out of retry loop
+                factsJson = useOpenAI
+                  ? await openaiChatJson({
+                      apiKey: openaiKey,
+                      baseUrl: openaiBaseUrl,
+                      model: openaiModelText,
+                      system: forensicSystemPrompt(),
+                      user: extractionUser,
+                      maxTokens: 1400,
+                    })
+                  : await claudeChatJson({
+                      apiKey: claudeKey,
+                      model: claudeModelText,
+                      system: forensicSystemPrompt(),
+                      user: extractionUser,
+                      maxTokens: 1400,
+                    });
+
                 break;
               } catch (e: any) {
                 lastError = e;
                 const errorMsg = e?.message || String(e);
-                
-                // Don't retry on certain errors (invalid API key, etc.)
-                if (errorMsg.includes("401") || errorMsg.includes("Invalid API key")) {
-                  console.error("Fatal OpenAI error (no retry):", errorMsg);
-                  throw e; // This will be caught by outer try-catch
+
+                if (errorMsg.includes("401") || errorMsg.includes("Invalid API key") || errorMsg.includes("invalid_api_key")) {
+                  console.error(`Fatal ${provider} error (no retry):`, errorMsg);
+                  throw e;
                 }
-                
-                // Rate limit or other transient errors - retry
-                console.warn(`OpenAI error (attempt ${attempt + 1}/${maxRetries + 1}):`, errorMsg);
-                
+
+                console.warn(`${provider} error (attempt ${attempt + 1}/${maxRetries + 1}):`, errorMsg);
+
                 if (attempt === maxRetries) {
-                  // Final attempt failed - mark file as failed but continue with others
                   const finalErrorMsg = errorMsg.includes("rate limit") || errorMsg.includes("429")
-                    ? `OpenAI rate limit exceeded after ${maxRetries + 1} attempts. Will retry on next batch.`
-                    : `OpenAI API error after ${maxRetries + 1} attempts: ${errorMsg.substring(0, 500)}`;
+                    ? `${provider} rate limit exceeded after ${maxRetries + 1} attempts. Will retry on next batch.`
+                    : `${provider} API error after ${maxRetries + 1} attempts: ${errorMsg.substring(0, 500)}`;
                   
                   await supabaseAdmin
                     .from("audit_job_files")
@@ -1287,7 +1430,7 @@ try {
           } else {
             factsJson = {
               document_type: "unknown",
-              summary: "OPENAI_API_KEY not configured; extraction skipped",
+              summary: "OPENAI_API_KEY or CLAUDE_API_KEY not configured; extraction skipped",
               facts: [],
               internal_red_flags: [],
             };
@@ -1367,15 +1510,15 @@ try {
           })
           .eq("id", jobId);
       } else if (finalProcessed >= finalTotal) {
-        if (!openaiReady) {
+        if (!aiReady) {
           await supabaseAdmin
             .from("audit_jobs")
             .update({
               status: "completed",
               progress: 100,
               completed_at: new Date().toISOString(),
-              report_markdown: "## Forensic AI Audit Report\n\nOPENAI_API_KEY not configured; no AI synthesis was performed.\n",
-              report_json: { executive_summary: "OPENAI_API_KEY not configured", red_flags: [], coverage_notes: ["Configure OPENAI_API_KEY to run forensic audit."] },
+              report_markdown: "## Forensic AI Audit Report\n\nOPENAI_API_KEY or CLAUDE_API_KEY not configured; no AI synthesis was performed.\n",
+              report_json: { executive_summary: "AI not configured", red_flags: [], coverage_notes: ["Configure OPENAI_API_KEY or CLAUDE_API_KEY to run forensic audit."] },
               current_step: "Completed",
             })
             .eq("id", jobId);
@@ -1447,19 +1590,27 @@ try {
 
             let reportJson: any = null;
             let synthesisError: string | null = null;
+            const synthesisUser = finalSynthesisPrompt({ vaultId: job.vault_id, vaultName, jobId, fileFacts: payload });
             try {
-              reportJson = await openaiChatJson({
-                apiKey: openaiKey,
-                baseUrl: openaiBaseUrl,
-                model: openaiModelText,
-                system: forensicSystemPrompt(),
-                user: finalSynthesisPrompt({ vaultId: job.vault_id, vaultName, jobId, fileFacts: payload }),
-                temperature: 0,
-                maxTokens: 1800,
-              });
+              reportJson = useOpenAI
+                ? await openaiChatJson({
+                    apiKey: openaiKey,
+                    baseUrl: openaiBaseUrl,
+                    model: openaiModelText,
+                    system: forensicSystemPrompt(),
+                    user: synthesisUser,
+                    maxTokens: 4096,
+                  })
+                : await claudeChatJson({
+                    apiKey: claudeKey,
+                    model: claudeModelText,
+                    system: forensicSystemPrompt(),
+                    user: synthesisUser,
+                    maxTokens: 4096,
+                  });
             } catch (err: any) {
               synthesisError = err?.message || String(err);
-              console.warn("OpenAI synthesis failed; falling back to forensic-only report:", synthesisError);
+              console.warn(`${useOpenAI ? "OpenAI" : "Claude"} synthesis failed; falling back to forensic-only report:`, synthesisError);
             }
 
             const reportMd = reportJson ? reportMarkdownFromJson(reportJson, vaultName) : "";
@@ -1486,7 +1637,8 @@ try {
             } else if (auditMd) {
               combinedReportMd = auditMd;
             } else {
-              combinedReportMd = "## Forensic Audit Report\n\nReport synthesis failed. Please retry the audit.";
+              const errHint = synthesisError ? `\n\n**Reason:** ${synthesisError.slice(0, 300)}` : "";
+              combinedReportMd = `## Forensic Audit Report\n\nReport synthesis failed. Please retry the audit.${errHint}`;
             }
 
             combinedReportMd = sanitizeForensicText(combinedReportMd);

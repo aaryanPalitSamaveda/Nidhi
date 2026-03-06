@@ -7,7 +7,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { useToast } from '@/hooks/use-toast';
-import { signIn, signUp } from '@/lib/auth';
+import { signIn, signUp, resetPasswordForEmail } from '@/lib/auth';
 import { useAuth } from '@/contexts/AuthContext';
 import { Shield, Lock, Mail, User } from 'lucide-react';
 import { PasswordInput } from '@/components/ui/password-input';
@@ -32,6 +32,7 @@ type SignupFormData = z.infer<typeof signupSchema>;
 export default function Auth() {
   const [isLogin, setIsLogin] = useState(true);
   const [isLoading, setIsLoading] = useState(false);
+  const [showForgotPassword, setShowForgotPassword] = useState(false);
   const navigate = useNavigate();
   const { toast } = useToast();
   const { user, loading } = useAuth();
@@ -43,6 +44,29 @@ export default function Auth() {
   const signupForm = useForm<SignupFormData>({
     resolver: zodResolver(signupSchema),
   });
+
+  const forgotForm = useForm<{ email: z.infer<typeof loginSchema>['email'] }>({
+    resolver: zodResolver(loginSchema.pick({ email: true })),
+  });
+
+  const handleForgotPassword = async (data: { email: string }) => {
+    setIsLoading(true);
+    const { error } = await resetPasswordForEmail(data.email);
+    setIsLoading(false);
+    if (error) {
+      toast({
+        title: 'Failed to send reset email',
+        description: error.message,
+        variant: 'destructive',
+      });
+      return;
+    }
+    toast({
+      title: 'Check your email',
+      description: 'If an account exists, you will receive a password reset link.',
+    });
+    setShowForgotPassword(false);
+  };
 
   useEffect(() => {
     if (!loading && user) {
@@ -234,7 +258,36 @@ export default function Auth() {
               </p>
             </div>
 
-            {isLogin ? (
+            {showForgotPassword ? (
+              <form onSubmit={forgotForm.handleSubmit(handleForgotPassword)} className="space-y-5">
+                <div className="space-y-2">
+                  <Label htmlFor="forgotEmail" className="text-foreground">Email</Label>
+                  <div className="relative">
+                    <Mail className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+                    <Input
+                      id="forgotEmail"
+                      type="email"
+                      placeholder="you@company.com"
+                      className="pl-10 bg-input border-gold/20 focus:border-gold"
+                      {...forgotForm.register('email')}
+                    />
+                  </div>
+                  {forgotForm.formState.errors.email && (
+                    <p className="text-sm text-destructive">{forgotForm.formState.errors.email.message}</p>
+                  )}
+                </div>
+                <Button type="submit" variant="gold" size="lg" className="w-full" disabled={isLoading}>
+                  {isLoading ? 'Sending...' : 'Send reset link'}
+                </Button>
+                <button
+                  type="button"
+                  onClick={() => setShowForgotPassword(false)}
+                  className="w-full text-sm text-muted-foreground hover:text-gold transition-colors"
+                >
+                  Back to login
+                </button>
+              </form>
+            ) : isLogin ? (
               <form onSubmit={loginForm.handleSubmit(handleLogin)} className="space-y-5">
                 <div className="space-y-2">
                   <Label htmlFor="email" className="text-foreground">Email</Label>
@@ -272,6 +325,13 @@ export default function Auth() {
                 <Button type="submit" variant="gold" size="lg" className="w-full" disabled={isLoading}>
                   {isLoading ? 'Signing in...' : 'Sign In'}
                 </Button>
+                <button
+                  type="button"
+                  onClick={() => setShowForgotPassword(true)}
+                  className="w-full text-sm text-muted-foreground hover:text-gold transition-colors mt-2"
+                >
+                  Forgot password?
+                </button>
               </form>
             ) : (
               <form onSubmit={signupForm.handleSubmit(handleSignup)} className="space-y-5">

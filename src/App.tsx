@@ -6,6 +6,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter, Routes, Route } from "react-router-dom";
 import { AuthProvider, useAuth } from "@/contexts/AuthContext";
 import ChatWidget from "@/components/ChatWidget/ChatWidget";
+import { AuditBackgroundPoller } from "@/components/AuditBackgroundPoller";
 
 const Index = lazy(() => import("./pages/Index"));
 const Auth = lazy(() => import("./pages/Auth"));
@@ -19,6 +20,7 @@ const ClientVault = lazy(() => import("./pages/client/Vault"));
 const DocumentViewer = lazy(() => import("./pages/DocumentViewer"));
 const Auditor = lazy(() => import("./pages/Auditor"));
 const Settings = lazy(() => import("./pages/Settings"));
+const ResetPassword = lazy(() => import("./pages/ResetPassword"));
 const NotFound = lazy(() => import("./pages/NotFound"));
 
 const PageLoader = () => (
@@ -41,7 +43,7 @@ const App = () => (
       <TooltipProvider>
         <Toaster />
         <Sonner />
-        <BrowserRouter>
+        <BrowserRouter future={{ v7_relativeSplatPath: true }}>
           <Suspense fallback={<PageLoader />}>
             <Routes>
               <Route path="/" element={<Index />} />
@@ -57,11 +59,13 @@ const App = () => (
               <Route path="/document/:documentId" element={<DocumentViewer />} />
               <Route path="/auditor" element={<Auditor />} />
               <Route path="/settings" element={<Settings />} />
+              <Route path="/reset-password" element={<ResetPassword />} />
               <Route path="*" element={<NotFound />} />
             </Routes>
           </Suspense>
         </BrowserRouter>
         <AuthenticatedChatWidget />
+        <AuditBackgroundPoller />
       </TooltipProvider>
     </AuthProvider>
   </QueryClientProvider>

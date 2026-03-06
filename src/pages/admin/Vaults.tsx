@@ -88,6 +88,12 @@ export default function AdminVaults() {
 
   const fetchVaults = async () => {
     try {
+      const { data: auditorVaultIds } = await supabase
+        .from('auditor_sessions')
+        .select('vault_id')
+        .not('vault_id', 'is', null);
+      const excludeIds = new Set((auditorVaultIds || []).map((r: { vault_id: string }) => r.vault_id));
+
       const { data, error } = await supabase
         .from('vaults')
         .select('*')
@@ -95,9 +101,11 @@ export default function AdminVaults() {
 
       if (error) throw error;
 
+      const vaultsData = (data || []).filter((v) => !excludeIds.has(v.id));
+
       // Fetch client info and all users with access for each vault
       const vaultsWithUsers = await Promise.all(
-        (data || []).map(async (vault) => {
+        vaultsData.map(async (vault) => {
           // Fetch client info if client_id exists
           let client = null;
           if (vault.client_id) {

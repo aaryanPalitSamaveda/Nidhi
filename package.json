@@ -11,7 +11,10 @@
     "preview": "vite preview",
     "setup-admins": "node scripts/setup-admins.js",
     "create-client": "node scripts/create-client-user.js",
-    "confirm-emails": "node scripts/confirm-user-emails.js"
+    "confirm-emails": "node scripts/confirm-user-emails.js",
+    "migrate-storage": "node scripts/migrate-storage.js",
+    "migrate-database": "node scripts/migrate-database.js",
+    "set-admin-passwords": "node scripts/set-admin-passwords.js"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.72.1",

@@ -1,5 +1,5 @@
 # Must match VITE_SUPABASE_PROJECT_ID / your .env - frontend calls this project
-project_id = "iqwqgamoiuejsauisfvf"
+project_id = "unyiuyzhteeuoyujqpbf"
 
 [auth]
 enable_anonymous_sign_ins = true

@@ -17,6 +17,8 @@ import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/component
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { runCIMGeneration } from '@/services/CIM/cimGenerationController';
+import { auditVaultInvoke } from '@/services/auditVaultApi';
+import { setAuditBackgroundActive, clearAuditBackgroundActive } from '@/components/AuditBackgroundPoller';
 import type { CIMReport } from '@/services/CIM/types';
 import { runTeaserGeneration, getFormattedTeaser } from '@/services/teaser/teaserGenerationController';
 import type { TeaserReport } from '@/services/teaser/types';
@@ -127,8 +129,10 @@ function VaultDetailInner() {
   const [auditJob, setAuditJob] = useState<any>(null);
   const [auditIsRunning, setAuditIsRunning] = useState(false);
   const [auditError, setAuditError] = useState<string | null>(null);
+  const [userHasStartedAudit, setUserHasStartedAudit] = useState(false);
   const reportContentRef = useRef<HTMLDivElement>(null);
   const isRestartingRef = useRef(false);
+  const userStartedAuditRef = useRef(false);
   const sanitizedReportMarkdown = useMemo(() => {
     const safeStringify = (input: unknown) => {
       try {
@@ -1688,28 +1692,29 @@ function VaultDetailInner() {
 
   const startAudit = useCallback(async () => {
     if (!vaultId) return;
+    userStartedAuditRef.current = true;
+    setUserHasStartedAudit(true);
     setAuditError(null);
     setAuditIsRunning(true);
     setAuditJob(null);
     setAuditJobId(null);
 
     try {
-      const { data, error } = await supabase.functions.invoke('audit-vault', {
-        body: { action: 'start', vaultId },
-      });
-      if (error) throw error;
+      const data = await auditVaultInvoke({ action: 'start', vaultId });
       if (!data?.jobId) {
         throw new Error('Audit start failed (no jobId returned)');
       }
 
       setAuditJobId(data.jobId);
       localStorage.setItem(`nidhi:auditJobId:${vaultId}`, data.jobId);
+      setAuditBackgroundActive(vaultId, data.jobId);
 
-      const runRes = await supabase.functions.invoke('audit-vault', {
-        body: { action: 'run', jobId: data.jobId, maxFiles: 5 },
-      });
-      if (runRes.error) throw runRes.error;
-      setAuditJob(runRes.data?.job ?? null);
+      const runRes = await auditVaultInvoke({ action: 'run', jobId: data.jobId, maxFiles: 2 });
+      const runJob = runRes?.job as { status?: string } | undefined;
+      setAuditJob(runJob ?? null);
+      if (runJob?.status === 'completed' || runJob?.status === 'failed' || runJob?.status === 'cancelled') {
+        clearAuditBackgroundActive(vaultId);
+      }
     } catch (e: any) {
       const msg = e?.message || e?.error || 'Failed to start audit';
       setAuditError(msg);
@@ -1727,12 +1732,13 @@ function VaultDetailInner() {
         setAuditError('Please log in again to run the audit.');
         return;
       }
-      const { data, error } = await supabase.functions.invoke('audit-vault', {
-        body: { action: 'run', jobId: auditJobId, maxFiles: 5 },
-      });
-      if (error) throw error;
-      setAuditJob(data?.job ?? null);
+      const data = await auditVaultInvoke({ action: 'run', jobId: auditJobId, maxFiles: 2 });
+      const job = data?.job as { status?: string } | undefined;
+      setAuditJob(job ?? null);
       setAuditError(null);
+      if (job?.status === 'completed' || job?.status === 'failed' || job?.status === 'cancelled') {
+        clearAuditBackgroundActive(vaultId!);
+      }
     } catch (e: any) {
       const msg = e?.message || e?.error || 'Audit batch failed';
       const status = e?.context?.response?.status ?? e?.context?.status;
@@ -1743,11 +1749,13 @@ function VaultDetailInner() {
     } finally {
       setAuditIsRunning(false);
     }
-  }, [auditJobId, auditIsRunning]);
+  }, [auditJobId, auditIsRunning, vaultId]);
 
   const loadAuditState = useCallback(async () => {
     if (!vaultId || isRestartingRef.current) return;
     setAuditError(null);
+    userStartedAuditRef.current = false;
+    setUserHasStartedAudit(false);
 
     const persistedJobId = localStorage.getItem(`nidhi:auditJobId:${vaultId}`);
     if (persistedJobId) {
@@ -1755,13 +1763,12 @@ function VaultDetailInner() {
       try {
         const { data: { session } } = await supabase.auth.getSession();
         if (!session) return;
-        const { data, error } = await supabase.functions.invoke('audit-vault', {
-          body: { action: 'status', jobId: persistedJobId },
-        });
-        if (!error && data?.job) {
+        const data = await auditVaultInvoke({ action: 'status', jobId: persistedJobId });
+        if (data?.job) {
           if (data.job.status === 'cancelled') {
             setAuditJobId(null);
             setAuditJob(null);
+            clearAuditBackgroundActive(vaultId);
             localStorage.removeItem(`nidhi:auditJobId:${vaultId}`);
             return;
           }
@@ -1795,30 +1802,35 @@ function VaultDetailInner() {
 
   const stopAudit = useCallback(async () => {
     if (!auditJobId || auditJob?.status === 'completed' || auditJob?.status === 'failed' || auditJob?.status === 'cancelled') return;
+    const jobToCancel = auditJobId;
+    // Clear UI immediately so user sees stop right away
+    setAuditIsRunning(false);
+    setAuditJobId(null);
+    setAuditJob(null);
+    setAuditError(null);
+    setUserHasStartedAudit(false);
+    userStartedAuditRef.current = false;
+    clearAuditBackgroundActive(vaultId);
+    localStorage.removeItem(`nidhi:auditJobId:${vaultId}`);
+    toast({
+      title: 'Audit Stopped',
+      description: 'The audit has been cancelled. You can start a new one anytime.',
+    });
     try {
-      await supabase.functions.invoke('audit-vault', {
-        body: { action: 'cancel', jobId: auditJobId },
-      });
-      setAuditJobId(null);
-      setAuditJob(null);
-      setAuditError(null);
-      localStorage.removeItem(`nidhi:auditJobId:${vaultId}`);
-      toast({
-        title: 'Audit Stopped',
-        description: 'The audit has been cancelled. You can start a new one anytime.',
-      });
-      loadAuditState();
+      await auditVaultInvoke({ action: 'cancel', jobId: jobToCancel });
     } catch (e: any) {
       toast({
-        title: 'Error',
-        description: e?.message || 'Failed to stop audit.',
-        variant: 'destructive',
+        title: 'Note',
+        description: 'Audit cancelled locally. Server may take a moment to stop.',
+        variant: 'default',
       });
     }
-  }, [vaultId, auditJobId, auditJob?.status, toast, loadAuditState]);
+  }, [vaultId, auditJobId, auditJob?.status, toast]);
 
   const startOrRegenerateAudit = useCallback(async () => {
     if (!vaultId) return;
+    userStartedAuditRef.current = true;
+    setUserHasStartedAudit(true);
     const hadReport = !!auditJob?.report_markdown;
     setAuditError(null);
     setAuditIsRunning(true);
@@ -1826,22 +1838,21 @@ function VaultDetailInner() {
     setAuditJobId(null);
 
     try {
-      const { data, error } = await supabase.functions.invoke('audit-vault', {
-        body: { action: 'start', vaultId },
-      });
-      if (error) throw error;
+      const data = await auditVaultInvoke({ action: 'start', vaultId });
       if (!data?.jobId) {
         throw new Error('Audit start failed (no jobId returned)');
       }
 
       setAuditJobId(data.jobId);
       localStorage.setItem(`nidhi:auditJobId:${vaultId}`, data.jobId);
+      setAuditBackgroundActive(vaultId, data.jobId);
 
-      const runRes = await supabase.functions.invoke('audit-vault', {
-        body: { action: 'run', jobId: data.jobId, maxFiles: 5 },
-      });
-      if (runRes.error) throw runRes.error;
-      setAuditJob(runRes.data?.job ?? null);
+      const runRes = await auditVaultInvoke({ action: 'run', jobId: data.jobId, maxFiles: 2 });
+      const runJob = runRes?.job as { status?: string } | undefined;
+      setAuditJob(runJob ?? null);
+      if (runJob?.status === 'completed' || runJob?.status === 'failed' || runJob?.status === 'cancelled') {
+        clearAuditBackgroundActive(vaultId);
+      }
       toast({
         title: hadReport ? 'Audit Regenerated' : 'Audit Started',
         description: hadReport ? 'A new audit has been started. Report will be saved when complete.' : 'A new audit has been started.',
@@ -2208,9 +2219,10 @@ function VaultDetailInner() {
     if (!auditJobId) return;
     if (auditJob?.status === 'completed' || auditJob?.status === 'failed' || auditJob?.status === 'cancelled') return;
     if (isRestartingRef.current) return;
+    if (!userStartedAuditRef.current) return;
 
     const t = setInterval(() => {
-      if (!auditIsRunning && !isRestartingRef.current) {
+      if (!auditIsRunning && !isRestartingRef.current && userStartedAuditRef.current) {
         runAuditBatch();
       }
     }, 4000);
@@ -2223,13 +2235,26 @@ function VaultDetailInner() {
     loadAuditState();
   }, [isAuditDialogOpen, loadAuditState]);
 
+  useEffect(() => {
+    if (!isAuditDialogOpen) {
+      userStartedAuditRef.current = false;
+      setUserHasStartedAudit(false);
+    }
+  }, [isAuditDialogOpen]);
+
+  const resumeAudit = useCallback(() => {
+    userStartedAuditRef.current = true;
+    setUserHasStartedAudit(true);
+    if (vaultId && auditJobId) setAuditBackgroundActive(vaultId, auditJobId);
+  }, [vaultId, auditJobId]);
+
   // Poll status when dialog is open and job is running - recovers from silent crashes (e.g. Edge Function timeout)
   useEffect(() => {
     if (!isAuditDialogOpen || !auditJobId) return;
     if (auditJob?.status === 'completed' || auditJob?.status === 'failed' || auditJob?.status === 'cancelled') return;
     const poll = setInterval(async () => {
       try {
-        const { data } = await supabase.functions.invoke('audit-vault', { body: { action: 'status', jobId: auditJobId } });
+        const data = await auditVaultInvoke({ action: 'status', jobId: auditJobId });
         if (data?.job) setAuditJob(data.job);
       } catch {
         // Fallback: fetch from DB
@@ -2326,10 +2351,10 @@ function VaultDetailInner() {
                         <Button
                           variant="gold"
                           size="sm"
-                          onClick={startOrRegenerateAudit}
-                          disabled={auditIsRunning || (auditJob?.status === 'running' || auditJob?.status === 'queued')}
+                          onClick={auditJob?.status === 'running' || auditJob?.status === 'queued' ? resumeAudit : startOrRegenerateAudit}
+                          disabled={auditIsRunning || ((auditJob?.status === 'running' || auditJob?.status === 'queued') && userHasStartedAudit)}
                         >
-                          {auditJob?.status === 'running' || auditJob?.status === 'queued' ? 'Audit Running' : auditJob?.report_markdown ? 'Regenerate' : 'Start Audit'}
+                          {(auditJob?.status === 'running' || auditJob?.status === 'queued') && userHasStartedAudit ? 'Audit Running' : auditJob?.status === 'running' || auditJob?.status === 'queued' ? 'Resume' : auditJob?.report_markdown ? 'Regenerate' : 'Start Audit'}
                         </Button>
                         {(auditJob?.status === 'running' || auditJob?.status === 'queued') && (
                           <Button
