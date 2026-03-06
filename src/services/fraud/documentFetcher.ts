@@ -22,23 +22,33 @@ export async function fetchDocumentsViaAuditor(sessionId: string): Promise<Docum
 
   const api = `${String(url).replace(/\/$/, '')}/api/auditor`;
   const { data: { user } } = await supabase.auth.getUser();
-  const res = await fetch(api, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ action: 'fetch-documents', sessionId, ...(user?.id && { userId: user.id }) }),
-  });
-  const data = (await res.json().catch(() => ({}))) as { documents?: Array<{ fileName: string; fileType: string; content: string }>; error?: string };
-  if (!res.ok) throw new Error(data.error || `Request failed: ${res.status}`);
-
-  const docs = data.documents ?? [];
-  return docs.map((d) => ({
-    name: d.fileName,
-    path: '',
-    size: 0,
-    type: d.fileType || 'application/octet-stream',
-    lastModified: '',
-    content: d.content,
-  }));
+  try {
+    const res = await fetch(api, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'fetch-documents', sessionId, ...(user?.id && { userId: user.id }) }),
+    });
+    const data = (await res.json().catch(() => ({}))) as { documents?: Array<{ fileName: string; fileType: string; content: string }>; error?: string };
+    if (!res.ok) {
+      if (res.status === 404) {
+        console.warn('[fetchDocumentsViaAuditor] Backend 404 (check VITE_FRAUD_BACKEND_URL), falling back to client-side');
+        return null;
+      }
+      throw new Error(data.error || `Request failed: ${res.status}`);
+    }
+    const docs = data.documents ?? [];
+    return docs.map((d) => ({
+      name: d.fileName,
+      path: '',
+      size: 0,
+      type: d.fileType || 'application/octet-stream',
+      lastModified: '',
+      content: d.content,
+    }));
+  } catch (e) {
+    // Propagate backend errors (500, etc) so user sees real message; only 404 returns null above
+    throw e;
+  }
 }
 
 export async function fetchAllFilesFromVault(vaultId: string): Promise<DocumentFile[]> {
