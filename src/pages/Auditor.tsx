@@ -18,10 +18,8 @@ import logo from '@/assets/samaveda-logo.jpeg';
 import { formatFileSize } from '@/utils/format';
 import { supabase } from '@/integrations/supabase/client';
 import { runCIMGeneration, getFormattedCIM } from '@/services/CIM/cimGenerationController';
-import { runTeaserGeneration, getFormattedTeaser } from '@/services/teaser/teaserGenerationController';
 import { fetchDocumentsViaAuditor } from '@/services/fraud/documentFetcher';
 import type { CIMReport } from '@/services/CIM/types';
-import type { TeaserReport } from '@/services/teaser/types';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 
 // Set VITE_USE_FRAUD_BACKEND=false in .env for localhost to avoid CORS (uses Supabase Edge Function)
@@ -109,15 +107,11 @@ export default function Auditor() {
   const [uploadProgress, setUploadProgress] = useState<{ id: string; name: string; progress: number }[]>([]);
   const [isCreateFolderOpen, setIsCreateFolderOpen] = useState(false);
   const [newFolderName, setNewFolderName] = useState('');
-  const [teaserReport, setTeaserReport] = useState<TeaserReport | null>(null);
   const [cimReport, setCimReport] = useState<CIMReport | null>(null);
-  const [teaserError, setTeaserError] = useState<string | null>(null);
   const [cimError, setCimError] = useState<string | null>(null);
-  const [teaserIsRunning, setTeaserIsRunning] = useState(false);
   const [cimIsRunning, setCimIsRunning] = useState(false);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const reportContentRef = useRef<HTMLDivElement>(null);
-  const teaserAbortRef = useRef<AbortController | null>(null);
   const cimAbortRef = useRef<AbortController | null>(null);
   const { toast } = useToast();
 
@@ -152,9 +146,7 @@ export default function Auditor() {
     setCurrentFolderId(null);
     setAuditJob(null);
     setAuditError(null);
-    setTeaserReport(null);
     setCimReport(null);
-    setTeaserError(null);
     setCimError(null);
   }, []);
 
@@ -501,38 +493,6 @@ export default function Auditor() {
     }
   };
 
-  const startTeaserGeneration = useCallback(async () => {
-    if (!session?.vaultId || !session?.company_name || !session?.sessionId) return;
-    const { data: { user } } = await supabase.auth.getUser();
-    if (!user) {
-      toast({ title: 'Error', description: 'Please wait for session to load.', variant: 'destructive' });
-      return;
-    }
-    setTeaserError(null);
-    setTeaserIsRunning(true);
-    try {
-      teaserAbortRef.current = new AbortController();
-      const prefetched = await fetchDocumentsViaAuditor(session.sessionId);
-      const report = await runTeaserGeneration(
-        session.vaultId,
-        session.company_name,
-        user.id,
-        teaserAbortRef.current.signal,
-        prefetched ?? undefined
-      );
-      setTeaserReport(report);
-      toast({ title: 'Teaser generated', description: 'Download available.' });
-    } catch (e: any) {
-      if (e?.name !== 'AbortError') {
-        setTeaserError(e?.message || 'Failed');
-        toast({ title: 'Error', description: e?.message, variant: 'destructive' });
-      }
-    } finally {
-      setTeaserIsRunning(false);
-      teaserAbortRef.current = null;
-    }
-  }, [session?.vaultId, session?.company_name, session?.sessionId, toast]);
-
   const startCimGeneration = useCallback(async () => {
     if (!session?.vaultId || !session?.company_name || !session?.sessionId) return;
     const { data: { user } } = await supabase.auth.getUser();
@@ -563,22 +523,6 @@ export default function Auditor() {
       cimAbortRef.current = null;
     }
   }, [session?.vaultId, session?.company_name, session?.sessionId, toast]);
-
-  const downloadTeaserPdf = useCallback(async () => {
-    if (!teaserReport) return;
-    const element = document.getElementById('auditor-teaser-content');
-    if (!element) return;
-    const html2pdf = (await import('html2pdf.js')).default;
-    const safeName = (session?.company_name || 'Teaser').replace(/\s+/g, '_');
-    html2pdf().set({
-      margin: 10,
-      filename: `Teaser_${safeName}_${new Date().toISOString().split('T')[0]}.pdf`,
-      image: { type: 'jpeg', quality: 0.98 },
-      html2canvas: { scale: 2, backgroundColor: '#ffffff' },
-      jsPDF: { orientation: 'portrait', unit: 'mm', format: 'a4' },
-    }).from(element).save();
-    toast({ title: 'Downloaded', description: 'Teaser saved as PDF.' });
-  }, [teaserReport, session?.company_name, toast]);
 
   const downloadCimPdf = useCallback(async () => {
     if (!cimReport) return;
@@ -819,10 +763,9 @@ export default function Auditor() {
             </div>
 
             <Tabs defaultValue="audit" className="space-y-4">
-              <TabsList className="grid w-full grid-cols-3">
+              <TabsList className="grid w-full grid-cols-2">
                 <TabsTrigger value="audit">Forensic Audit</TabsTrigger>
                 <TabsTrigger value="cim">CIM</TabsTrigger>
-                <TabsTrigger value="teaser">Teaser</TabsTrigger>
               </TabsList>
 
               <TabsContent value="audit" className="space-y-4">
@@ -942,48 +885,6 @@ export default function Auditor() {
                         id="auditor-cim-content"
                         className="max-w-none text-slate-800 bg-white rounded p-4 min-h-[200px] border border-slate-200 shadow-sm"
                         dangerouslySetInnerHTML={{ __html: getFormattedCIM(cimReport) }}
-                      />
-                    </ScrollArea>
-                  )}
-                </div>
-              </TabsContent>
-
-              <TabsContent value="teaser" className="space-y-4">
-                <div className="rounded-xl border border-gold/20 p-6 bg-card/50 space-y-4">
-                  <h3 className="font-display text-xl font-semibold">Generate Teaser</h3>
-                  <p className="text-sm text-muted-foreground">
-                    Teaser document from all documents in this session.
-                  </p>
-                  {teaserError && <p className="text-sm text-destructive">{teaserError}</p>}
-                  <div className="flex flex-wrap gap-2">
-                    <Button
-                      variant="gold"
-                      onClick={startTeaserGeneration}
-                      disabled={teaserIsRunning || documents.length === 0}
-                    >
-                      {teaserIsRunning ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : null}
-                      {teaserIsRunning ? 'Generating...' : teaserReport ? 'Regenerate' : 'Generate Teaser'}
-                    </Button>
-                    {teaserIsRunning && (
-                      <Button variant="destructive" onClick={() => teaserAbortRef.current?.abort()}>
-                        Stop
-                      </Button>
-                    )}
-                    <Button
-                      variant="outline"
-                      onClick={() => teaserReport && downloadTeaserPdf()}
-                      disabled={!teaserReport}
-                    >
-                      <Download className="w-4 h-4 mr-2" />
-                      Download Teaser PDF
-                    </Button>
-                  </div>
-                  {teaserReport && (
-                    <ScrollArea className="h-[45vh] rounded-lg border border-slate-200 mt-4 overflow-hidden">
-                      <div
-                        id="auditor-teaser-content"
-                        className="max-w-none text-slate-800 bg-white rounded p-4 min-h-[200px] border border-slate-200 shadow-sm"
-                        dangerouslySetInnerHTML={{ __html: getFormattedTeaser(teaserReport) }}
                       />
                     </ScrollArea>
                   )}
