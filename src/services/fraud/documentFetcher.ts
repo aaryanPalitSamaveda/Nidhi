@@ -20,7 +20,7 @@ export async function fetchDocumentsViaAuditor(sessionId: string): Promise<Docum
   const url = import.meta.env.VITE_FRAUD_BACKEND_URL;
   if (!url) return null;
 
-  const api = `${String(url).replace(/\/$/, '')}/api/auditor`;
+  const api = import.meta.env.DEV ? '/api/auditor' : `${String(url).replace(/\/$/, '')}/api/auditor`;
   const { data: { user } } = await supabase.auth.getUser();
   try {
     const res = await fetch(api, {

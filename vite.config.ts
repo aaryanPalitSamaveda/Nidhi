@@ -8,6 +8,12 @@ export default defineConfig(({ mode }) => ({
   server: {
     host: "::",
     port: 8080,
+    proxy: {
+      "/api/auditor": { target: "https://nidhi-fraud-backend.onrender.com", changeOrigin: true },
+      "/api/teaser-generation": { target: "https://nidhi-teaser-backend.onrender.com", changeOrigin: true },
+      "/api/cim-generation": { target: "https://cim-backend-vqmz.onrender.com", changeOrigin: true },
+      "/api/cim-status": { target: "https://cim-backend-vqmz.onrender.com", changeOrigin: true },
+    },
   },
   plugins: [react(), mode === "development" && componentTagger()].filter(Boolean),
   resolve: {

@@ -24,9 +24,9 @@ import type { CIMReport } from '@/services/CIM/types';
 import type { TeaserReport } from '@/services/teaser/types';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 
-// Auditor API via fraud backend when VITE_FRAUD_BACKEND_URL is set. Else direct Supabase.
+// Auditor API via fraud backend when VITE_FRAUD_BACKEND_URL is set. In dev, use proxy to avoid CORS.
 const AUDITOR_API = import.meta.env.VITE_FRAUD_BACKEND_URL
-  ? `${String(import.meta.env.VITE_FRAUD_BACKEND_URL).replace(/\/$/, '')}/api/auditor`
+  ? (import.meta.env.DEV ? '/api/auditor' : `${String(import.meta.env.VITE_FRAUD_BACKEND_URL).replace(/\/$/, '')}/api/auditor`)
   : null;
 
 async function auditorInvoke(body: Record<string, unknown>) {

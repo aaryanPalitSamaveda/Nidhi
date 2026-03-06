@@ -61,8 +61,9 @@ export async function runTeaserGeneration(
 
     console.log('Step 2: Sending documents to teaser backend...');
 
-    const teaserBackendUrl = import.meta.env.VITE_TEASER_BACKEND_URL || 'http://localhost:3004';
-    const teaserResponse = await fetch(`${teaserBackendUrl.replace(/\/$/, '')}/api/teaser-generation`, {
+    const teaserBase = import.meta.env.DEV ? '' : (import.meta.env.VITE_TEASER_BACKEND_URL || 'http://localhost:3004');
+    const teaserUrl = teaserBase ? `${String(teaserBase).replace(/\/$/, '')}/api/teaser-generation` : '/api/teaser-generation';
+    const teaserResponse = await fetch(teaserUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({

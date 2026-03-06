@@ -5,7 +5,7 @@
 import { supabase } from '@/integrations/supabase/client';
 
 const AUDIT_API = import.meta.env.VITE_FRAUD_BACKEND_URL
-  ? `${String(import.meta.env.VITE_FRAUD_BACKEND_URL).replace(/\/$/, '')}/api/auditor`
+  ? (import.meta.env.DEV ? '/api/auditor' : `${String(import.meta.env.VITE_FRAUD_BACKEND_URL).replace(/\/$/, '')}/api/auditor`)
   : null;
 
 type AuditAction = 'start' | 'run' | 'status' | 'cancel';

@@ -53,8 +53,9 @@ export async function runCIMGeneration(
 
     console.log('Step 2: Sending documents to CIM backend for generation...');
 
-    const cimBackendUrl = import.meta.env.VITE_CIM_BACKEND_URL || 'http://localhost:3003';
-    const cimResponse = await fetch(`${cimBackendUrl.replace(/\/$/, '')}/api/cim-generation`, {
+    const cimBase = import.meta.env.DEV ? '' : (import.meta.env.VITE_CIM_BACKEND_URL || 'http://localhost:3003');
+    const cimUrl = cimBase ? `${String(cimBase).replace(/\/$/, '')}/api/cim-generation` : '/api/cim-generation';
+    const cimResponse = await fetch(cimUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
