@@ -200,7 +200,6 @@ function VaultDetailInner() {
     });
   }, [cimReport?.cimReport]);
   const cimBackendUrl = useMemo(() => {
-    if (import.meta.env.DEV) return '';
     const raw = import.meta.env.VITE_CIM_BACKEND_URL || 'http://localhost:3003';
     return raw.replace(/\/$/, '');
   }, []);

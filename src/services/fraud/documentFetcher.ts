@@ -18,9 +18,9 @@ export interface DocumentFile {
  */
 export async function fetchDocumentsViaAuditor(sessionId: string): Promise<DocumentFile[] | null> {
   const url = import.meta.env.VITE_FRAUD_BACKEND_URL;
-  if (!url) return null;
+  if (!url || import.meta.env.VITE_USE_FRAUD_BACKEND === 'false') return null;
 
-  const api = import.meta.env.DEV ? '/api/auditor' : `${String(url).replace(/\/$/, '')}/api/auditor`;
+  const api = `${String(url).replace(/\/$/, '')}/api/auditor`;
   const { data: { user } } = await supabase.auth.getUser();
   try {
     const res = await fetch(api, {

@@ -4,9 +4,9 @@
  */
 import { supabase } from '@/integrations/supabase/client';
 
-const AUDIT_API = import.meta.env.VITE_FRAUD_BACKEND_URL
-  ? (import.meta.env.DEV ? '/api/auditor' : `${String(import.meta.env.VITE_FRAUD_BACKEND_URL).replace(/\/$/, '')}/api/auditor`)
-  : null;
+// Set VITE_USE_FRAUD_BACKEND=false in .env for localhost to avoid CORS (uses Supabase Edge Function)
+const USE_BACKEND = import.meta.env.VITE_FRAUD_BACKEND_URL && import.meta.env.VITE_USE_FRAUD_BACKEND !== 'false';
+const AUDIT_API = USE_BACKEND ? `${String(import.meta.env.VITE_FRAUD_BACKEND_URL).replace(/\/$/, '')}/api/auditor` : null;
 
 type AuditAction = 'start' | 'run' | 'status' | 'cancel';
 type AuditBody =
