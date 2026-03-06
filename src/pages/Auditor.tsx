@@ -17,6 +17,12 @@ import { useToast } from '@/hooks/use-toast';
 import logo from '@/assets/samaveda-logo.jpeg';
 import { formatFileSize } from '@/utils/format';
 import { supabase } from '@/integrations/supabase/client';
+import { runCIMGeneration, getFormattedCIM } from '@/services/CIM/cimGenerationController';
+import { runTeaserGeneration, getFormattedTeaser } from '@/services/teaser/teaserGenerationController';
+import { fetchDocumentsViaAuditor } from '@/services/fraud/documentFetcher';
+import type { CIMReport } from '@/services/CIM/types';
+import type { TeaserReport } from '@/services/teaser/types';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 
 // Auditor API via fraud backend when VITE_FRAUD_BACKEND_URL is set. Else direct Supabase.
 const AUDITOR_API = import.meta.env.VITE_FRAUD_BACKEND_URL
@@ -25,16 +31,20 @@ const AUDITOR_API = import.meta.env.VITE_FRAUD_BACKEND_URL
 
 async function auditorInvoke(body: Record<string, unknown>) {
   if (AUDITOR_API) {
+    const { data: { user } } = await supabase.auth.getUser();
+    const authBody = { ...body, ...(user?.id && { userId: user.id }) };
     const res = await fetch(AUDITOR_API, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
+      body: JSON.stringify(authBody),
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error((data as { error?: string }).error || `Request failed: ${res.status}`);
     return data as Record<string, unknown>;
   }
-  const { data, error } = await supabase.functions.invoke('auditor-public', { body });
+  const { data: { user } } = await supabase.auth.getUser();
+  const authBody = { ...body, ...(user?.id && { userId: user.id }) };
+  const { data, error } = await supabase.functions.invoke('auditor-public', { body: authBody });
   if (error) {
     let msg = error.message || 'Request failed';
     try {
@@ -100,7 +110,16 @@ export default function Auditor() {
   const [uploadProgress, setUploadProgress] = useState<{ id: string; name: string; progress: number }[]>([]);
   const [isCreateFolderOpen, setIsCreateFolderOpen] = useState(false);
   const [newFolderName, setNewFolderName] = useState('');
+  const [teaserReport, setTeaserReport] = useState<TeaserReport | null>(null);
+  const [cimReport, setCimReport] = useState<CIMReport | null>(null);
+  const [teaserError, setTeaserError] = useState<string | null>(null);
+  const [cimError, setCimError] = useState<string | null>(null);
+  const [teaserIsRunning, setTeaserIsRunning] = useState(false);
+  const [cimIsRunning, setCimIsRunning] = useState(false);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const reportContentRef = useRef<HTMLDivElement>(null);
+  const teaserAbortRef = useRef<AbortController | null>(null);
+  const cimAbortRef = useRef<AbortController | null>(null);
   const { toast } = useToast();
 
   // Same as dataroom: ensure we have a valid session (JWT) for Edge Function calls.
@@ -134,6 +153,10 @@ export default function Auditor() {
     setCurrentFolderId(null);
     setAuditJob(null);
     setAuditError(null);
+    setTeaserReport(null);
+    setCimReport(null);
+    setTeaserError(null);
+    setCimError(null);
   }, []);
 
   const fetchStatus = useCallback(async () => {
@@ -174,7 +197,14 @@ export default function Auditor() {
       return;
     }
     try {
-      const data = await auditorInvoke({ action: 'create-session', name: name.trim(), company_name: companyName.trim() });
+      const { data: { user } } = await supabase.auth.getUser();
+      const userId = user?.id ?? null;
+      const data = await auditorInvoke({
+        action: 'create-session',
+        name: name.trim(),
+        company_name: companyName.trim(),
+        userId: userId || undefined,
+      });
       if (data.error) throw new Error(String(data.error));
       setSession({
         sessionId: data.sessionId,
@@ -442,16 +472,130 @@ export default function Auditor() {
   }, [auditJob?.id, auditJob?.status]);
 
   const downloadReport = async () => {
-    if (!auditJob?.report_markdown) return;
-    const blob = new Blob([auditJob.report_markdown], { type: 'text/markdown' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `audit_report_${session?.company_name || 'report'}_${new Date().toISOString().slice(0, 10)}.md`;
-    a.click();
-    URL.revokeObjectURL(url);
-    toast({ title: 'Downloaded', description: 'Report saved.' });
+    const md = auditJob?.report_markdown;
+    if (!md || !reportContentRef.current) return;
+    try {
+      toast({ title: 'Generating PDF...', description: 'Please wait.' });
+      const sourceElement = reportContentRef.current;
+      // Use the visible element directly - off-screen clones (left:-9999px) cause blank PDFs with html2canvas
+      sourceElement.scrollIntoView({ behavior: 'instant', block: 'start' });
+      await new Promise((r) => setTimeout(r, 400));
+      const html2pdf = (await import('html2pdf.js')).default;
+      const safeName = (session?.company_name || 'report').replace(/\s+/g, '_');
+      const options = {
+        margin: 10,
+        filename: `audit_report_${safeName}_${new Date().toISOString().slice(0, 10)}.pdf`,
+        image: { type: 'jpeg', quality: 0.98 },
+        html2canvas: { scale: 2, backgroundColor: '#ffffff', useCORS: true, logging: false },
+        jsPDF: { orientation: 'portrait', unit: 'mm', format: 'a4' },
+      };
+      const pdfBlob = await html2pdf().set(options).from(sourceElement).outputPdf('blob');
+      const url = URL.createObjectURL(pdfBlob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `audit_report_${safeName}_${new Date().toISOString().slice(0, 10)}.pdf`;
+      a.click();
+      URL.revokeObjectURL(url);
+      toast({ title: 'PDF Downloaded', description: 'Report saved as PDF.' });
+    } catch (e: any) {
+      toast({ title: 'Error', description: e?.message || 'Failed to generate PDF', variant: 'destructive' });
+    }
   };
+
+  const startTeaserGeneration = useCallback(async () => {
+    if (!session?.vaultId || !session?.company_name || !session?.sessionId) return;
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) {
+      toast({ title: 'Error', description: 'Please wait for session to load.', variant: 'destructive' });
+      return;
+    }
+    setTeaserError(null);
+    setTeaserIsRunning(true);
+    try {
+      teaserAbortRef.current = new AbortController();
+      const prefetched = await fetchDocumentsViaAuditor(session.sessionId);
+      const report = await runTeaserGeneration(
+        session.vaultId,
+        session.company_name,
+        user.id,
+        teaserAbortRef.current.signal,
+        prefetched ?? undefined
+      );
+      setTeaserReport(report);
+      toast({ title: 'Teaser generated', description: 'Download available.' });
+    } catch (e: any) {
+      if (e?.name !== 'AbortError') {
+        setTeaserError(e?.message || 'Failed');
+        toast({ title: 'Error', description: e?.message, variant: 'destructive' });
+      }
+    } finally {
+      setTeaserIsRunning(false);
+      teaserAbortRef.current = null;
+    }
+  }, [session?.vaultId, session?.company_name, session?.sessionId, toast]);
+
+  const startCimGeneration = useCallback(async () => {
+    if (!session?.vaultId || !session?.company_name || !session?.sessionId) return;
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) {
+      toast({ title: 'Error', description: 'Please wait for session to load.', variant: 'destructive' });
+      return;
+    }
+    setCimError(null);
+    setCimIsRunning(true);
+    try {
+      cimAbortRef.current = new AbortController();
+      const prefetched = await fetchDocumentsViaAuditor(session.sessionId);
+      const report = await runCIMGeneration(
+        session.vaultId,
+        session.company_name,
+        user.id,
+        cimAbortRef.current.signal,
+        undefined,
+        prefetched ?? undefined
+      );
+      setCimReport(report);
+      toast({ title: 'CIM generated', description: 'Download available.' });
+    } catch (e: any) {
+      setCimError(e?.message || 'Failed');
+      toast({ title: 'Error', description: e?.message, variant: 'destructive' });
+    } finally {
+      setCimIsRunning(false);
+      cimAbortRef.current = null;
+    }
+  }, [session?.vaultId, session?.company_name, session?.sessionId, toast]);
+
+  const downloadTeaserPdf = useCallback(async () => {
+    if (!teaserReport) return;
+    const element = document.getElementById('auditor-teaser-content');
+    if (!element) return;
+    const html2pdf = (await import('html2pdf.js')).default;
+    const safeName = (session?.company_name || 'Teaser').replace(/\s+/g, '_');
+    html2pdf().set({
+      margin: 10,
+      filename: `Teaser_${safeName}_${new Date().toISOString().split('T')[0]}.pdf`,
+      image: { type: 'jpeg', quality: 0.98 },
+      html2canvas: { scale: 2, backgroundColor: '#ffffff' },
+      jsPDF: { orientation: 'portrait', unit: 'mm', format: 'a4' },
+    }).from(element).save();
+    toast({ title: 'Downloaded', description: 'Teaser saved as PDF.' });
+  }, [teaserReport, session?.company_name, toast]);
+
+  const downloadCimPdf = useCallback(async () => {
+    if (!cimReport) return;
+    const element = document.getElementById('auditor-cim-content');
+    if (!element) return;
+    const html2pdf = (await import('html2pdf.js')).default;
+    const safeName = (session?.company_name || 'CIM').replace(/\s+/g, '_');
+    html2pdf().set({
+      margin: 10,
+      filename: `CIM_${safeName}_${new Date().toISOString().split('T')[0]}.pdf`,
+      image: { type: 'jpeg', quality: 0.98 },
+      html2canvas: { scale: 2, backgroundColor: '#ffffff' },
+      jsPDF: { orientation: 'portrait', unit: 'mm', format: 'a4' },
+    }).from(element).save();
+    toast({ title: 'Downloaded', description: 'CIM saved as PDF.' });
+  }, [cimReport, session?.company_name, toast]);
 
   const rootFolderId = session?.folderId ?? null;
   const effectiveFolderId = currentFolderId ?? rootFolderId;
@@ -675,64 +819,178 @@ export default function Auditor() {
               )}
             </div>
 
-            <div className="rounded-xl border border-gold/20 p-6 bg-card/50 space-y-4">
-              <h3 className="font-display text-xl font-semibold flex items-center gap-2">
-                <FileText className="w-5 h-5 text-gold" />
-                Audit Documents
-              </h3>
-              <p className="text-sm text-muted-foreground">
-                Runs an evidence-cited forensic audit. Red flags are backed by extracted text.
-              </p>
-              {auditError && <p className="text-sm text-destructive">{auditError}</p>}
-              <div className="flex flex-wrap gap-2">
-                <Button
-                  variant="gold"
-                  onClick={startAudit}
-                  disabled={auditIsRunning || documents.length === 0 || (auditJob?.status === 'running' || auditJob?.status === 'queued')}
-                >
-                  {(auditJob?.status === 'running' || auditJob?.status === 'queued') ? (
-                    <>
-                      <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                      Audit Running
-                    </>
-                  ) : auditJob?.report_markdown ? (
-                    'Regenerate'
-                  ) : (
-                    'Start Audit'
+            <Tabs defaultValue="audit" className="space-y-4">
+              <TabsList className="grid w-full grid-cols-3">
+                <TabsTrigger value="audit">Forensic Audit</TabsTrigger>
+                <TabsTrigger value="cim">CIM</TabsTrigger>
+                <TabsTrigger value="teaser">Teaser</TabsTrigger>
+              </TabsList>
+
+              <TabsContent value="audit" className="space-y-4">
+                <div className="rounded-xl border border-gold/20 p-6 bg-card/50 space-y-4">
+                  <h3 className="font-display text-xl font-semibold flex items-center gap-2">
+                    <FileText className="w-5 h-5 text-gold" />
+                    Audit Documents
+                  </h3>
+                  <p className="text-sm text-muted-foreground">
+                    Runs an evidence-cited forensic audit. Red flags are backed by extracted text.
+                  </p>
+                  {auditError && <p className="text-sm text-destructive">{auditError}</p>}
+                  <div className="flex flex-wrap gap-2">
+                    <Button
+                      variant="gold"
+                      onClick={startAudit}
+                      disabled={auditIsRunning || documents.length === 0 || (auditJob?.status === 'running' || auditJob?.status === 'queued')}
+                    >
+                      {(auditJob?.status === 'running' || auditJob?.status === 'queued') ? (
+                        <>
+                          <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                          Audit Running
+                        </>
+                      ) : auditJob?.report_markdown ? (
+                        'Regenerate'
+                      ) : (
+                        'Start Audit'
+                      )}
+                    </Button>
+                    {(auditJob?.status === 'running' || auditJob?.status === 'queued') && (
+                      <Button variant="destructive" onClick={stopAudit}>
+                        Stop
+                      </Button>
+                    )}
+                    <Button
+                      variant="outline"
+                      onClick={downloadReport}
+                      disabled={!auditJob?.report_markdown}
+                    >
+                      <Download className="w-4 h-4 mr-2" />
+                      Download PDF
+                    </Button>
+                  </div>
+                  {(auditJob?.status === 'running' || auditJob?.status === 'queued') && (
+                    <div className="space-y-2">
+                      <div className="flex justify-between text-sm">
+                        <span>Files: {auditJob?.processed_files ?? 0}/{auditJob?.total_files ?? 0}</span>
+                        <span>{Math.round(Number(auditJob?.progress ?? 0))}%</span>
+                      </div>
+                      <Progress value={Number(auditJob?.progress ?? 0)} className="h-2" />
+                      <p className="text-xs text-muted-foreground">{auditJob?.current_step || '—'}</p>
+                    </div>
                   )}
-                </Button>
-                {(auditJob?.status === 'running' || auditJob?.status === 'queued') && (
-                  <Button variant="destructive" onClick={stopAudit}>
-                    Stop
-                  </Button>
-                )}
-                <Button
-                  variant="outline"
-                  onClick={downloadReport}
-                  disabled={!auditJob?.report_markdown}
-                >
-                  <Download className="w-4 h-4 mr-2" />
-                  Download Report
-                </Button>
-              </div>
-              {(auditJob?.status === 'running' || auditJob?.status === 'queued') && (
-                <div className="space-y-2">
-                  <div className="flex justify-between text-sm">
-                    <span>Files: {auditJob?.processed_files ?? 0}/{auditJob?.total_files ?? 0}</span>
-                    <span>{Math.round(Number(auditJob?.progress ?? 0))}%</span>
-                  </div>
-                  <Progress value={Number(auditJob?.progress ?? 0)} className="h-2" />
-                  <p className="text-xs text-muted-foreground">{auditJob?.current_step || '—'}</p>
+                  {auditJob?.report_markdown && (
+                    <ScrollArea className="h-[45vh] rounded-lg border border-slate-200 mt-4 overflow-hidden">
+                      <div ref={reportContentRef} className="w-full">
+                        <div className="w-full rounded-xl border border-slate-200 bg-white shadow-sm overflow-hidden">
+                          <div className="border-b border-slate-200 bg-slate-50 px-4 py-3">
+                            <p className="text-xs uppercase tracking-widest text-slate-500">Forensic Audit Report</p>
+                            <p className="text-base font-semibold text-slate-900">
+                              {session?.company_name ?? 'Report'} · Preview
+                            </p>
+                            <div className="mt-2 flex flex-wrap gap-2 text-xs text-slate-600">
+                              <span className="rounded-full border border-slate-200 bg-white px-2.5 py-1">
+                                Files: {auditJob?.processed_files ?? 0}/{auditJob?.total_files ?? 0}
+                              </span>
+                              <span className="rounded-full border border-slate-200 bg-white px-2.5 py-1">
+                                Status: {auditJob?.status || 'completed'}
+                              </span>
+                            </div>
+                          </div>
+                          <div className="p-4 sm:p-6 bg-white">
+                            <div className="prose prose-sm max-w-none break-words [overflow-wrap:anywhere] prose-headings:font-display prose-h1:text-lg prose-h2:text-base prose-h3:text-sm prose-h4:text-sm prose-h2:text-indigo-700 prose-h3:text-emerald-700 prose-h4:text-amber-700 prose-h4:bg-amber-50 prose-h4:border-l-4 prose-h4:border-amber-400 prose-h4:pl-3 prose-h4:py-1 prose-h4:rounded-md prose-p:text-slate-700 prose-strong:text-slate-900 prose-ul:text-slate-700 prose-ol:text-slate-700 prose-li:text-slate-700 prose-code:text-slate-700 prose-pre:bg-slate-50 prose-pre:text-slate-700 prose-pre:whitespace-pre-wrap prose-pre:overflow-x-auto prose-code:break-words prose-table:border prose-table:border-slate-200 prose-th:border prose-th:border-slate-200 prose-td:border prose-td:border-slate-200 prose-th:bg-slate-100 prose-th:text-slate-700 prose-th:font-semibold">
+                              <ReactMarkdown remarkPlugins={[remarkGfm]}>{auditJob.report_markdown}</ReactMarkdown>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    </ScrollArea>
+                  )}
                 </div>
-              )}
-              {auditJob?.report_markdown && (
-                <ScrollArea className="h-[40vh] rounded-lg border p-4 mt-4">
-                  <div className="prose prose-sm max-w-none break-words prose-headings:font-display prose-h2:text-base prose-h3:text-sm prose-p:text-slate-700">
-                    <ReactMarkdown remarkPlugins={[remarkGfm]}>{auditJob.report_markdown}</ReactMarkdown>
+              </TabsContent>
+
+              <TabsContent value="cim" className="space-y-4">
+                <div className="rounded-xl border border-gold/20 p-6 bg-card/50 space-y-4">
+                  <h3 className="font-display text-xl font-semibold">Generate CIM</h3>
+                  <p className="text-sm text-muted-foreground">
+                    Confidential Information Memorandum from all documents in this session.
+                  </p>
+                  {cimError && <p className="text-sm text-destructive">{cimError}</p>}
+                  <div className="flex flex-wrap gap-2">
+                    <Button
+                      variant="gold"
+                      onClick={startCimGeneration}
+                      disabled={cimIsRunning || documents.length === 0}
+                    >
+                      {cimIsRunning ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : null}
+                      {cimIsRunning ? 'Generating...' : cimReport ? 'Regenerate' : 'Generate CIM'}
+                    </Button>
+                    {cimIsRunning && (
+                      <Button variant="destructive" onClick={() => cimAbortRef.current?.abort()}>
+                        Stop
+                      </Button>
+                    )}
+                    <Button
+                      variant="outline"
+                      onClick={() => cimReport && downloadCimPdf()}
+                      disabled={!cimReport}
+                    >
+                      <Download className="w-4 h-4 mr-2" />
+                      Download CIM PDF
+                    </Button>
                   </div>
-                </ScrollArea>
-              )}
-            </div>
+                  {cimReport && (
+                    <ScrollArea className="h-[45vh] rounded-lg border border-slate-200 mt-4 overflow-hidden">
+                      <div
+                        id="auditor-cim-content"
+                        className="max-w-none text-slate-800 bg-white rounded p-4 min-h-[200px] border border-slate-200 shadow-sm"
+                        dangerouslySetInnerHTML={{ __html: getFormattedCIM(cimReport) }}
+                      />
+                    </ScrollArea>
+                  )}
+                </div>
+              </TabsContent>
+
+              <TabsContent value="teaser" className="space-y-4">
+                <div className="rounded-xl border border-gold/20 p-6 bg-card/50 space-y-4">
+                  <h3 className="font-display text-xl font-semibold">Generate Teaser</h3>
+                  <p className="text-sm text-muted-foreground">
+                    Teaser document from all documents in this session.
+                  </p>
+                  {teaserError && <p className="text-sm text-destructive">{teaserError}</p>}
+                  <div className="flex flex-wrap gap-2">
+                    <Button
+                      variant="gold"
+                      onClick={startTeaserGeneration}
+                      disabled={teaserIsRunning || documents.length === 0}
+                    >
+                      {teaserIsRunning ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : null}
+                      {teaserIsRunning ? 'Generating...' : teaserReport ? 'Regenerate' : 'Generate Teaser'}
+                    </Button>
+                    {teaserIsRunning && (
+                      <Button variant="destructive" onClick={() => teaserAbortRef.current?.abort()}>
+                        Stop
+                      </Button>
+                    )}
+                    <Button
+                      variant="outline"
+                      onClick={() => teaserReport && downloadTeaserPdf()}
+                      disabled={!teaserReport}
+                    >
+                      <Download className="w-4 h-4 mr-2" />
+                      Download Teaser PDF
+                    </Button>
+                  </div>
+                  {teaserReport && (
+                    <ScrollArea className="h-[45vh] rounded-lg border border-slate-200 mt-4 overflow-hidden">
+                      <div
+                        id="auditor-teaser-content"
+                        className="max-w-none text-slate-800 bg-white rounded p-4 min-h-[200px] border border-slate-200 shadow-sm"
+                        dangerouslySetInnerHTML={{ __html: getFormattedTeaser(teaserReport) }}
+                      />
+                    </ScrollArea>
+                  )}
+                </div>
+              </TabsContent>
+            </Tabs>
           </div>
         )}
       </main>

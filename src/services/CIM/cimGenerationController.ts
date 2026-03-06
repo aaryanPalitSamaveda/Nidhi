@@ -1,4 +1,5 @@
 import { fetchAllFilesFromVault } from '../fraud/documentFetcher';
+import type { DocumentFile } from '../fraud/documentFetcher';
 import { CIMReport } from './types';
 import { supabase } from '@/integrations/supabase/client';
 
@@ -6,18 +7,22 @@ export async function runCIMGeneration(
   vaultId: string,
   vaultName: string,
   userId: string,
-  signal?: AbortSignal, // ✅ NEW: Accept abort signal for cancellation
-  runId?: string
+  signal?: AbortSignal,
+  runId?: string,
+  prefetchedDocuments?: DocumentFile[]
 ): Promise<CIMReport> {
   try {
     console.log(`Starting CIM Generation for vault: ${vaultId} (${vaultName})`);
 
     console.log('Step 1: Fetching documents from vault...');
-    const files = await fetchAllFilesFromVault(vaultId);
+    const files = prefetchedDocuments ?? await fetchAllFilesFromVault(vaultId);
     console.log(`Found ${files.length} documents`);
 
     if (files.length === 0) {
-      throw new Error('No documents found in vault for CIM generation');
+      throw new Error(
+        'No documents found in vault for CIM generation. ' +
+        'Ensure you are logged in, have access to this dataroom, and that documents exist (check the Documents tab).'
+      );
     }
 
     // FIX: Convert files to base64 without using Buffer (which doesn't exist in browsers)

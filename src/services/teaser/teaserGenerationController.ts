@@ -1,11 +1,13 @@
 import { fetchAllFilesFromVault } from '../fraud/documentFetcher';
+import type { DocumentFile } from '../fraud/documentFetcher';
 import type { TeaserReport } from './types';
 
 export async function runTeaserGeneration(
   vaultId: string,
   vaultName: string,
   userId: string,
-  abortSignal?: AbortSignal
+  abortSignal?: AbortSignal,
+  prefetchedDocuments?: DocumentFile[]
 ): Promise<TeaserReport> {
   try {
     console.log(`Starting Teaser Generation for vault: ${vaultId} (${vaultName})`);
@@ -15,11 +17,14 @@ export async function runTeaserGeneration(
     }
 
     console.log('Step 1: Fetching documents from vault...');
-    const files = await fetchAllFilesFromVault(vaultId);
+    const files = prefetchedDocuments ?? await fetchAllFilesFromVault(vaultId);
     console.log(`Found ${files.length} documents`);
 
     if (files.length === 0) {
-      throw new Error('No documents found in vault for teaser generation');
+      throw new Error(
+        'No documents found in vault for teaser generation. ' +
+        'Ensure you are logged in, have access to this dataroom, and that documents exist (check the Documents tab).'
+      );
     }
 
     if (abortSignal?.aborted) {

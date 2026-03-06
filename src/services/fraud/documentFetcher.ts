@@ -1,10 +1,6 @@
 // src/services/fraud/documentFetcher.ts
 
-import { createClient } from '@supabase/supabase-js';
-
-const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
-const supabaseKey = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY;
-const supabase = createClient(supabaseUrl, supabaseKey);
+import { supabase } from '@/integrations/supabase/client';
 
 export interface DocumentFile {
   name: string;
@@ -12,25 +8,71 @@ export interface DocumentFile {
   size: number;
   type: string;
   lastModified: string;
-  content?: ArrayBuffer | Uint8Array;
+  content?: ArrayBuffer | Uint8Array | string; // string = base64 (used when prefetched via backend)
+}
+
+/**
+ * Fetches documents via the fraud backend (service role, bypasses storage RLS).
+ * Use this in the Auditor when VITE_FRAUD_BACKEND_URL is set.
+ * Returns null if the backend URL is not configured.
+ */
+export async function fetchDocumentsViaAuditor(sessionId: string): Promise<DocumentFile[] | null> {
+  const url = import.meta.env.VITE_FRAUD_BACKEND_URL;
+  if (!url) return null;
+
+  const api = `${String(url).replace(/\/$/, '')}/api/auditor`;
+  const { data: { user } } = await supabase.auth.getUser();
+  const res = await fetch(api, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action: 'fetch-documents', sessionId, ...(user?.id && { userId: user.id }) }),
+  });
+  const data = (await res.json().catch(() => ({}))) as { documents?: Array<{ fileName: string; fileType: string; content: string }>; error?: string };
+  if (!res.ok) throw new Error(data.error || `Request failed: ${res.status}`);
+
+  const docs = data.documents ?? [];
+  return docs.map((d) => ({
+    name: d.fileName,
+    path: '',
+    size: 0,
+    type: d.fileType || 'application/octet-stream',
+    lastModified: '',
+    content: d.content,
+  }));
 }
 
 export async function fetchAllFilesFromVault(vaultId: string): Promise<DocumentFile[]> {
   try {
+    if (!vaultId?.trim()) {
+      throw new Error('Vault ID is required to fetch documents');
+    }
     console.log(`Fetching all documents from vault: ${vaultId}`);
 
-    // Fetch all documents metadata
+    // Ensure user is authenticated (RLS requires auth.uid())
+    let { data: { session }, error: sessionError } = await supabase.auth.getSession();
+    if (sessionError || !session) {
+      console.error('No auth session - RLS may block document access:', sessionError?.message);
+      throw new Error('You must be logged in to fetch documents. Please sign in and try again.');
+    }
+    // Refresh session if expired (helps avoid stale token issues)
+    if (session?.user && session.expires_at && session.expires_at * 1000 < Date.now() + 60_000) {
+      const { data: { session: refreshed } } = await supabase.auth.refreshSession();
+      if (refreshed) session = refreshed;
+    }
+
+    // Fetch all documents metadata (includes docs in all folders)
     const { data: documents, error } = await supabase
       .from('documents')
       .select('id, name, file_path, file_size, file_type, created_at')
       .eq('vault_id', vaultId);
 
     if (error) {
+      console.error('Documents query error:', error.code, error.message, error.details);
       throw new Error(`Failed to fetch documents: ${error.message}`);
     }
 
     if (!documents || documents.length === 0) {
-      console.log('No documents found in vault');
+      console.log('No documents found in vault (query returned 0 rows)');
       return [];
     }
 
@@ -52,13 +94,24 @@ export async function fetchAllFilesFromVault(vaultId: string): Promise<DocumentF
     );
 
     const files: DocumentFile[] = [];
+    const failed: string[] = [];
     results.forEach((result, i) => {
       if (result.status === 'fulfilled') {
         files.push(result.value);
       } else {
-        console.warn(`✗ Failed to download ${documents[i]?.name}:`, result.reason);
+        const name = documents[i]?.name ?? 'unknown';
+        failed.push(name);
+        console.warn(`✗ Failed to download ${name}:`, result.reason);
       }
     });
+
+    // If we found documents in DB but all downloads failed, throw helpful error
+    if (documents.length > 0 && files.length === 0) {
+      throw new Error(
+        `Found ${documents.length} document(s) in vault but failed to download all. ` +
+        `Storage may be blocking access. Failed: ${failed.slice(0, 5).join(', ')}${failed.length > 5 ? '...' : ''}`
+      );
+    }
 
     console.log(`Successfully downloaded ${files.length}/${documents.length} files`);
     return files;
