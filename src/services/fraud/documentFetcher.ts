@@ -12,31 +12,53 @@ export interface DocumentFile {
 }
 
 /**
- * Fetches documents via the fraud backend (service role, bypasses storage RLS).
- * Use this in the Auditor when VITE_FRAUD_BACKEND_URL is set.
- * Returns null if the backend URL is not configured.
+ * Fetches documents via fraud backend or auditor-public Edge Function (service role, bypasses storage RLS).
+ * Same approach as forensic audit: backend fetches from storage, not client.
  */
 export async function fetchDocumentsViaAuditor(sessionId: string): Promise<DocumentFile[] | null> {
-  const url = import.meta.env.VITE_FRAUD_BACKEND_URL;
-  if (!url || import.meta.env.VITE_USE_FRAUD_BACKEND === 'false') return null;
-
-  const api = `${String(url).replace(/\/$/, '')}/api/auditor`;
   const { data: { user } } = await supabase.auth.getUser();
-  try {
-    const res = await fetch(api, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action: 'fetch-documents', sessionId, ...(user?.id && { userId: user.id }) }),
-    });
-    const data = (await res.json().catch(() => ({}))) as { documents?: Array<{ fileName: string; fileType: string; content: string }>; error?: string };
-    if (!res.ok) {
-      if (res.status === 404) {
-        console.warn('[fetchDocumentsViaAuditor] Backend 404 (check VITE_FRAUD_BACKEND_URL), falling back to client-side');
-        return null;
+  const body = { action: 'fetch-documents', sessionId, ...(user?.id && { userId: user.id }) };
+
+  // 1. Try fraud backend when enabled
+  const url = import.meta.env.VITE_FRAUD_BACKEND_URL;
+  if (url && import.meta.env.VITE_USE_FRAUD_BACKEND !== 'false') {
+    const api = `${String(url).replace(/\/$/, '')}/api/auditor`;
+    try {
+      const res = await fetch(api, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      const data = (await res.json().catch(() => ({}))) as { documents?: Array<{ fileName: string; fileType: string; content: string }>; error?: string };
+      if (!res.ok) {
+        if (res.status === 404) {
+          console.warn('[fetchDocumentsViaAuditor] Backend 404, falling back to Edge Function');
+          // fall through to Edge Function
+        } else {
+          throw new Error(data.error || `Request failed: ${res.status}`);
+        }
+      } else {
+        const docs = data.documents ?? [];
+        return docs.map((d) => ({
+          name: d.fileName,
+          path: '',
+          size: 0,
+          type: d.fileType || 'application/octet-stream',
+          lastModified: '',
+          content: d.content,
+        }));
       }
-      throw new Error(data.error || `Request failed: ${res.status}`);
+    } catch (e) {
+      console.warn('[fetchDocumentsViaAuditor] Backend failed, trying Edge Function:', e);
+      // fall through to Edge Function
     }
-    const docs = data.documents ?? [];
+  }
+
+  // 2. Use auditor-public Edge Function (same as forensic audit - service role bypasses storage RLS)
+  try {
+    const { data, error } = await supabase.functions.invoke('auditor-public', { body });
+    if (error) throw new Error(error.message || 'Edge Function failed');
+    const docs = (data as { documents?: Array<{ fileName: string; fileType: string; content: string }> })?.documents ?? [];
     return docs.map((d) => ({
       name: d.fileName,
       path: '',
@@ -46,7 +68,7 @@ export async function fetchDocumentsViaAuditor(sessionId: string): Promise<Docum
       content: d.content,
     }));
   } catch (e) {
-    // Propagate backend errors (500, etc) so user sees real message; only 404 returns null above
+    console.error('[fetchDocumentsViaAuditor] Edge Function failed:', e);
     throw e;
   }
 }

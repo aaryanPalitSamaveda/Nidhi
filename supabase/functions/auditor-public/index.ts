@@ -367,6 +367,66 @@ Deno.serve(async (req: Request) => {
       return jsonResponse(data, res.status);
     }
 
+    // POST .../fetch-documents or action fetch-documents (for CIM/Teaser - service role bypasses storage RLS)
+    if ((path.endsWith("/fetch-documents") || body?.action === "fetch-documents") && req.method === "POST") {
+      const { sessionId } = body;
+      if (!sessionId) return jsonResponse({ error: "sessionId required" }, 400);
+
+      const { data: session } = await supabase
+        .from("auditor_sessions")
+        .select("vault_id")
+        .eq("id", sessionId)
+        .single();
+
+      if (!session?.vault_id) {
+        return jsonResponse({ error: "Session not found" }, 404);
+      }
+
+      const { data: docs, error: docsErr } = await supabase
+        .from("documents")
+        .select("id, name, file_path, file_size, file_type, created_at")
+        .eq("vault_id", session.vault_id);
+
+      if (docsErr || !docs?.length) {
+        return jsonResponse({ documents: [] });
+      }
+
+      const documents: Array<{ fileName: string; fileType: string; content: string }> = [];
+      const failed: string[] = [];
+
+      for (const d of docs) {
+        try {
+          const { data: blob, error: dlErr } = await supabase.storage.from("documents").download(d.file_path);
+          if (dlErr || !blob) {
+            failed.push(d.name);
+            continue;
+          }
+          const buf = await blob.arrayBuffer();
+          const bytes = new Uint8Array(buf);
+          let binary = "";
+          for (let i = 0; i < bytes.byteLength; i++) {
+            binary += String.fromCharCode(bytes[i]);
+          }
+          documents.push({
+            fileName: d.name,
+            fileType: d.file_type || "application/octet-stream",
+            content: btoa(binary),
+          });
+        } catch (_) {
+          failed.push(d.name);
+        }
+      }
+
+      if (docs.length > 0 && documents.length === 0) {
+        return jsonResponse(
+          { error: `Failed to download all ${docs.length} document(s). Storage may be blocking. Failed: ${failed.slice(0, 5).join(", ")}${failed.length > 5 ? "..." : ""}` },
+          500
+        );
+      }
+
+      return jsonResponse({ documents });
+    }
+
     // GET .../status?sessionId=xxx or POST with action status
     const statusSessionId = url.searchParams.get("sessionId") ?? body?.sessionId;
     if ((path.endsWith("/status") || url.searchParams.has("sessionId") || body?.action === "status") && (req.method === "GET" || req.method === "POST")) {
