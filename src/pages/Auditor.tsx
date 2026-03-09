@@ -72,9 +72,9 @@ function capturePdfFromHtml(html: string, watermarkUrl: string, filename: string
   });
 }
 
-// Use fraud backend in production (CORS works); use Edge Function on localhost to avoid cross-origin
-const isProd = typeof window !== 'undefined' && !/localhost|127\.0\.0\.1/.test(window.location?.hostname ?? '');
-const USE_AUDITOR_BACKEND = import.meta.env.VITE_FRAUD_BACKEND_URL && (import.meta.env.VITE_USE_FRAUD_BACKEND === 'true' || isProd);
+// Use fraud backend only when explicitly enabled (VITE_USE_FRAUD_BACKEND=true).
+// Default: Edge Function (avoids CORS when fraud backend is cold on Render).
+const USE_AUDITOR_BACKEND = import.meta.env.VITE_FRAUD_BACKEND_URL && import.meta.env.VITE_USE_FRAUD_BACKEND === 'true';
 const AUDITOR_API = USE_AUDITOR_BACKEND ? `${String(import.meta.env.VITE_FRAUD_BACKEND_URL).replace(/\/$/, '')}/api/auditor` : null;
 
 async function auditorInvoke(body: Record<string, unknown>) {
