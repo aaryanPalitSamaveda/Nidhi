@@ -185,7 +185,7 @@ function VaultDetailInner() {
   const [buyerProgress, setBuyerProgress] = useState(0);
   const [buyerStatus, setBuyerStatus] = useState('Mapping Buyers/Investors for Dataroom');
   const buyerTimerRef = useRef<number | null>(null);
-  const cimPreviewRef = useRef<HTMLDivElement>(null);
+  const cimPreviewRef = useRef<HTMLIFrameElement | null>(null);
   const cimProgressTimerRef = useRef<number | null>(null);
   const cimStartedAtRef = useRef<number | null>(null);
   const cimAbortControllerRef = useRef<AbortController | null>(null);
@@ -2107,8 +2107,11 @@ function VaultDetailInner() {
   }, []);
 
   const downloadTeaserPdf = useCallback(async (report: TeaserReport) => {
-    const element = document.getElementById('teaser-report-content');
-    if (!element) return;
+    const el = document.getElementById('teaser-report-content');
+    if (!el) return;
+    const element = el instanceof HTMLIFrameElement && el.contentDocument?.body
+      ? el.contentDocument.body
+      : el;
     const html2pdf = (await import('html2pdf.js')).default;
     const safeName = (report.vaultName || 'Teaser').replace(/\s+/g, '_');
     const options = {
@@ -2123,8 +2126,9 @@ function VaultDetailInner() {
 
   const downloadCimPdf = useCallback(async (report: CIMReport) => {
     if (!cimPreviewRef.current) return;
+    const el = cimPreviewRef.current;
+    const element = el.contentDocument?.body ?? el;
     const html2pdf = (await import('html2pdf.js')).default;
-    const element = cimPreviewRef.current;
     const safeName = (report.vaultName || 'CIM').replace(/\s+/g, '_');
     const options = {
       margin: 10,
@@ -2533,11 +2537,13 @@ function VaultDetailInner() {
                       </div>
                       <ScrollArea className="h-[45vh] p-3 max-w-full overflow-hidden rounded-b-lg">
                         {cimReport ? (
-                          <div
+                          <iframe
                             ref={cimPreviewRef}
                             id="cim-report-content"
-                            className="max-w-none text-slate-800 bg-white rounded p-4 min-h-[200px]"
-                            dangerouslySetInnerHTML={{ __html: cimHtml }}
+                            title="CIM Report"
+                            srcDoc={cimHtml}
+                            className="w-full min-h-[45vh] border-0 bg-white rounded"
+                            sandbox="allow-same-origin"
                           />
                         ) : (
                           <p className="text-sm text-muted-foreground">CIM not generated yet.</p>
@@ -2602,10 +2608,12 @@ function VaultDetailInner() {
                       </div>
                       <ScrollArea className="h-[45vh] p-3 max-w-full overflow-hidden rounded-b-lg">
                         {teaserReport ? (
-                          <div
+                          <iframe
                             id="teaser-report-content"
-                            className="max-w-none text-slate-800 bg-white rounded p-4 min-h-[200px]"
-                            dangerouslySetInnerHTML={{ __html: getFormattedTeaser(teaserReport) }}
+                            title="Teaser Report"
+                            srcDoc={getFormattedTeaser(teaserReport)}
+                            className="w-full min-h-[45vh] border-0 bg-white rounded"
+                            sandbox="allow-same-origin"
                           />
                         ) : (
                           <p className="text-sm text-muted-foreground">Teaser not generated yet.</p>

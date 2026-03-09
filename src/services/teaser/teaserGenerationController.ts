@@ -77,7 +77,13 @@ export async function runTeaserGeneration(
     if (!teaserResponse.ok) {
       const errorText = await teaserResponse.text().catch(() => '');
       const statusInfo = teaserResponse.status ? `HTTP ${teaserResponse.status}` : 'HTTP error';
-      throw new Error(`Teaser API failed: ${statusInfo} ${errorText}`.trim());
+      let msg = `Teaser API failed: ${statusInfo} ${errorText}`.trim();
+      if (teaserResponse.status === 404) {
+        msg += '. The teaser backend may not be deployed or may be waking up (Render cold start). Try again in 30–60 seconds.';
+      } else if (teaserResponse.status === 500 && errorText.includes('CLAUDE_API_KEY')) {
+        msg += '. Set CLAUDE_API_KEY in the teaser backend environment (e.g. Render dashboard).';
+      }
+      throw new Error(msg);
     }
 
     const { teaserReport, filesAnalyzed } = await teaserResponse.json();

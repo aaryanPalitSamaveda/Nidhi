@@ -427,6 +427,77 @@ Deno.serve(async (req: Request) => {
       return jsonResponse({ documents });
     }
 
+    // POST .../fetch-documents-by-vault (for admin CIM/Teaser - service role bypasses storage RLS)
+    // Requires auth: user must be admin or have vault access
+    if ((path.endsWith("/fetch-documents-by-vault") || body?.action === "fetch-documents-by-vault") && req.method === "POST") {
+      const { vaultId } = body;
+      if (!vaultId) return jsonResponse({ error: "vaultId required" }, 400);
+
+      const authHeader = req.headers.get("Authorization");
+      const token = authHeader?.replace(/^Bearer\s+/i, "")?.trim();
+      if (!token) return jsonResponse({ error: "Unauthorized - login required" }, 401);
+
+      const { data: { user }, error: userErr } = await supabase.auth.getUser(token);
+      if (userErr || !user) return jsonResponse({ error: "Invalid or expired token" }, 401);
+
+      const { data: roleRows } = await supabase.from("user_roles").select("role").eq("user_id", user.id);
+      const isAdmin = (roleRows ?? []).some((r: { role: string }) => r.role === "admin");
+
+      let hasAccess = isAdmin;
+      if (!hasAccess) {
+        const { data: vp } = await supabase.from("vault_permissions").select("vault_id").eq("vault_id", vaultId).eq("user_id", user.id).limit(1);
+        if (vp?.length) hasAccess = true;
+      }
+      if (!hasAccess) {
+        const { data: v } = await supabase.from("vaults").select("id").eq("id", vaultId).or(`created_by.eq.${user.id},client_id.eq.${user.id}`).limit(1);
+        if (v?.length) hasAccess = true;
+      }
+      if (!hasAccess) return jsonResponse({ error: "Forbidden - no access to this vault" }, 403);
+
+      const { data: docs, error: docsErr } = await supabase
+        .from("documents")
+        .select("id, name, file_path, file_size, file_type, created_at")
+        .eq("vault_id", vaultId);
+
+      if (docsErr || !docs?.length) return jsonResponse({ documents: [] });
+
+      const documents: Array<{ fileName: string; fileType: string; content: string }> = [];
+      const failed: string[] = [];
+
+      for (const d of docs) {
+        try {
+          const { data: blob, error: dlErr } = await supabase.storage.from("documents").download(d.file_path);
+          if (dlErr || !blob) {
+            if (failed.length === 0) console.error("[fetch-documents-by-vault] First storage error:", d.file_path, dlErr?.message || "no blob");
+            failed.push(d.name);
+            continue;
+          }
+          const buf = await blob.arrayBuffer();
+          const bytes = new Uint8Array(buf);
+          let binary = "";
+          for (let i = 0; i < bytes.byteLength; i++) {
+            binary += String.fromCharCode(bytes[i]);
+          }
+          documents.push({
+            fileName: d.name,
+            fileType: d.file_type || "application/octet-stream",
+            content: btoa(binary),
+          });
+        } catch (_) {
+          failed.push(d.name);
+        }
+      }
+
+      if (docs.length > 0 && documents.length === 0) {
+        return jsonResponse(
+          { error: `Failed to download all ${docs.length} document(s). Failed: ${failed.slice(0, 5).join(", ")}${failed.length > 5 ? "..." : ""}` },
+          500
+        );
+      }
+
+      return jsonResponse({ documents });
+    }
+
     // GET .../status?sessionId=xxx or POST with action status
     const statusSessionId = url.searchParams.get("sessionId") ?? body?.sessionId;
     if ((path.endsWith("/status") || url.searchParams.has("sessionId") || body?.action === "status") && (req.method === "GET" || req.method === "POST")) {

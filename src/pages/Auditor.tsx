@@ -15,12 +15,62 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { useToast } from '@/hooks/use-toast';
 import logo from '@/assets/samaveda-logo.jpeg';
+import samavedaWatermark from '@/assets/samavedaWatermark.png';
 import { formatFileSize } from '@/utils/format';
 import { supabase } from '@/integrations/supabase/client';
 import { runCIMGeneration, getFormattedCIM } from '@/services/CIM/cimGenerationController';
+import { runTeaserGeneration, getFormattedTeaser } from '@/services/teaser/teaserGenerationController';
 import { fetchDocumentsViaAuditor } from '@/services/fraud/documentFetcher';
 import type { CIMReport } from '@/services/CIM/types';
+import type { TeaserReport } from '@/services/teaser/types';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+
+// Inject Samaveda watermark into HTML for CIM/Teaser (visible in preview and PDF)
+function withWatermark(html: string, watermarkUrl: string): string {
+  const fullUrl = watermarkUrl.startsWith('http') ? watermarkUrl : new URL(watermarkUrl, window.location.href).href;
+  const style = `<style id="samaveda-watermark">body{position:relative!important}body::before{content:'';position:absolute;top:0;left:0;right:0;bottom:0;background-image:url('${fullUrl}');background-repeat:repeat;background-position:center;background-size:350px 350px;opacity:0.12;pointer-events:none;z-index:0}body>*{position:relative;z-index:1}</style>`;
+  if (html.includes('</head>')) return html.replace('</head>', style + '</head>');
+  if (html.includes('<head>')) return html.replace('<head>', '<head>' + style);
+  return html.replace('<html>', '<html><head>' + style + '</head>');
+}
+
+// Create temp div for PDF capture (iframe body doesn't render correctly with html2canvas)
+function capturePdfFromHtml(html: string, watermarkUrl: string, filename: string) {
+  const withWm = withWatermark(html, watermarkUrl);
+  const parser = new DOMParser();
+  const doc = parser.parseFromString(withWm, 'text/html');
+  const body = doc.body;
+  const styles = Array.from(doc.querySelectorAll('style')).map((s) => s.textContent).join('\n');
+  const scopedStyles = styles.replace(/\bbody\b/g, '.samaveda-pdf-wrap');
+  const temp = document.createElement('div');
+  temp.id = 'samaveda-pdf-temp';
+  temp.className = 'samaveda-pdf-wrap';
+  temp.style.cssText = 'position:fixed;left:0;top:0;width:210mm;min-height:297mm;background:#fff;z-index:99999;overflow:visible;padding:20px;font-family:Georgia,serif;color:#1a1a1a';
+  temp.innerHTML = `<style>${scopedStyles}</style>${body.innerHTML}`;
+  document.body.appendChild(temp);
+  return new Promise<void>((resolve, reject) => {
+    import('html2pdf.js').then(({ default: html2pdf }) => {
+      html2pdf()
+        .set({
+          margin: 10,
+          filename,
+          image: { type: 'jpeg', quality: 0.98 },
+          html2canvas: { scale: 2, backgroundColor: '#ffffff', useCORS: true },
+          jsPDF: { orientation: 'portrait', unit: 'mm', format: 'a4' },
+        })
+        .from(temp)
+        .save()
+        .then(() => {
+          temp.remove();
+          resolve();
+        })
+        .catch((e: Error) => {
+          temp.remove();
+          reject(e);
+        });
+    }).catch(reject);
+  });
+}
 
 // Set VITE_USE_FRAUD_BACKEND=false in .env for localhost to avoid CORS (uses Supabase Edge Function)
 const USE_AUDITOR_BACKEND = import.meta.env.VITE_FRAUD_BACKEND_URL && import.meta.env.VITE_USE_FRAUD_BACKEND !== 'false';
@@ -110,9 +160,13 @@ export default function Auditor() {
   const [cimReport, setCimReport] = useState<CIMReport | null>(null);
   const [cimError, setCimError] = useState<string | null>(null);
   const [cimIsRunning, setCimIsRunning] = useState(false);
+  const [teaserReport, setTeaserReport] = useState<TeaserReport | null>(null);
+  const [teaserError, setTeaserError] = useState<string | null>(null);
+  const [teaserIsRunning, setTeaserIsRunning] = useState(false);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const reportContentRef = useRef<HTMLDivElement>(null);
   const cimAbortRef = useRef<AbortController | null>(null);
+  const teaserAbortRef = useRef<AbortController | null>(null);
   const { toast } = useToast();
 
   // Same as dataroom: ensure we have a valid session (JWT) for Edge Function calls.
@@ -148,6 +202,8 @@ export default function Auditor() {
     setAuditError(null);
     setCimReport(null);
     setCimError(null);
+    setTeaserReport(null);
+    setTeaserError(null);
   }, []);
 
   const fetchStatus = useCallback(async () => {
@@ -526,19 +582,61 @@ export default function Auditor() {
 
   const downloadCimPdf = useCallback(async () => {
     if (!cimReport) return;
-    const element = document.getElementById('auditor-cim-content');
-    if (!element) return;
-    const html2pdf = (await import('html2pdf.js')).default;
     const safeName = (session?.company_name || 'CIM').replace(/\s+/g, '_');
-    html2pdf().set({
-      margin: 10,
-      filename: `CIM_${safeName}_${new Date().toISOString().split('T')[0]}.pdf`,
-      image: { type: 'jpeg', quality: 0.98 },
-      html2canvas: { scale: 2, backgroundColor: '#ffffff' },
-      jsPDF: { orientation: 'portrait', unit: 'mm', format: 'a4' },
-    }).from(element).save();
-    toast({ title: 'Downloaded', description: 'CIM saved as PDF.' });
+    const filename = `CIM_${safeName}_${new Date().toISOString().split('T')[0]}.pdf`;
+    try {
+      toast({ title: 'Generating PDF...', description: 'Please wait.' });
+      await capturePdfFromHtml(getFormattedCIM(cimReport), samavedaWatermark, filename);
+      toast({ title: 'Downloaded', description: 'CIM saved as PDF.' });
+    } catch (e: any) {
+      toast({ title: 'Error', description: e?.message || 'Failed to generate PDF', variant: 'destructive' });
+    }
   }, [cimReport, session?.company_name, toast]);
+
+  const startTeaserGeneration = useCallback(async () => {
+    if (!session?.vaultId || !session?.company_name || !session?.sessionId) return;
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) {
+      toast({ title: 'Error', description: 'Please wait for session to load.', variant: 'destructive' });
+      return;
+    }
+    setTeaserError(null);
+    setTeaserIsRunning(true);
+    try {
+      teaserAbortRef.current = new AbortController();
+      const prefetched = await fetchDocumentsViaAuditor(session.sessionId);
+      const report = await runTeaserGeneration(
+        session.vaultId,
+        session.company_name,
+        user.id,
+        teaserAbortRef.current.signal,
+        prefetched ?? undefined
+      );
+      setTeaserReport(report);
+      toast({ title: 'Teaser generated', description: 'Download available.' });
+    } catch (e: any) {
+      if (e?.name !== 'AbortError') {
+        setTeaserError(e?.message || 'Failed');
+        toast({ title: 'Error', description: e?.message, variant: 'destructive' });
+      }
+    } finally {
+      setTeaserIsRunning(false);
+      teaserAbortRef.current = null;
+    }
+  }, [session?.vaultId, session?.company_name, session?.sessionId, toast]);
+
+  const downloadTeaserPdf = useCallback(async () => {
+    if (!teaserReport) return;
+    const safeName = (session?.company_name || 'Teaser').replace(/\s+/g, '_');
+    const filename = `Teaser_${safeName}_${new Date().toISOString().split('T')[0]}.pdf`;
+    try {
+      toast({ title: 'Generating PDF...', description: 'Please wait.' });
+      await capturePdfFromHtml(getFormattedTeaser(teaserReport), samavedaWatermark, filename);
+      toast({ title: 'Downloaded', description: 'Teaser saved as PDF.' });
+    } catch (e: any) {
+      toast({ title: 'Error', description: e?.message || 'Failed to generate PDF', variant: 'destructive' });
+    }
+  }, [teaserReport, session?.company_name, toast]);
 
   const rootFolderId = session?.folderId ?? null;
   const effectiveFolderId = currentFolderId ?? rootFolderId;
@@ -763,9 +861,10 @@ export default function Auditor() {
             </div>
 
             <Tabs defaultValue="audit" className="space-y-4">
-              <TabsList className="grid w-full grid-cols-2">
+              <TabsList className="grid w-full grid-cols-3">
                 <TabsTrigger value="audit">Forensic Audit</TabsTrigger>
                 <TabsTrigger value="cim">CIM</TabsTrigger>
+                <TabsTrigger value="teaser">Teaser</TabsTrigger>
               </TabsList>
 
               <TabsContent value="audit" className="space-y-4">
@@ -821,8 +920,8 @@ export default function Auditor() {
                   )}
                   {auditJob?.report_markdown && (
                     <ScrollArea className="h-[45vh] rounded-lg border border-slate-200 mt-4 overflow-hidden">
-                      <div ref={reportContentRef} className="w-full">
-                        <div className="w-full rounded-xl border border-slate-200 bg-white shadow-sm overflow-hidden">
+                      <div ref={reportContentRef} className="w-full relative">
+                        <div className="w-full rounded-xl border border-slate-200 bg-white shadow-sm overflow-hidden relative">
                           <div className="border-b border-slate-200 bg-slate-50 px-4 py-3">
                             <p className="text-xs uppercase tracking-widest text-slate-500">Forensic Audit Report</p>
                             <p className="text-base font-semibold text-slate-900">
@@ -837,8 +936,20 @@ export default function Auditor() {
                               </span>
                             </div>
                           </div>
-                          <div className="p-4 sm:p-6 bg-white">
-                            <div className="prose prose-sm max-w-none break-words [overflow-wrap:anywhere] prose-headings:font-display prose-h1:text-lg prose-h2:text-base prose-h3:text-sm prose-h4:text-sm prose-h2:text-indigo-700 prose-h3:text-emerald-700 prose-h4:text-amber-700 prose-h4:bg-amber-50 prose-h4:border-l-4 prose-h4:border-amber-400 prose-h4:pl-3 prose-h4:py-1 prose-h4:rounded-md prose-p:text-slate-700 prose-strong:text-slate-900 prose-ul:text-slate-700 prose-ol:text-slate-700 prose-li:text-slate-700 prose-code:text-slate-700 prose-pre:bg-slate-50 prose-pre:text-slate-700 prose-pre:whitespace-pre-wrap prose-pre:overflow-x-auto prose-code:break-words prose-table:border prose-table:border-slate-200 prose-th:border prose-th:border-slate-200 prose-td:border prose-td:border-slate-200 prose-th:bg-slate-100 prose-th:text-slate-700 prose-th:font-semibold">
+                          <div className="p-4 sm:p-6 bg-white relative">
+                            <div
+                              className="absolute inset-0 pointer-events-none"
+                              style={{
+                                backgroundImage: `url(${samavedaWatermark})`,
+                                backgroundRepeat: 'repeat',
+                                backgroundPosition: 'center',
+                                backgroundSize: '350px 350px',
+                                opacity: 0.12,
+                                zIndex: 10,
+                              }}
+                              aria-hidden
+                            />
+                            <div className="relative z-0 prose prose-sm max-w-none break-words [overflow-wrap:anywhere] prose-headings:font-display prose-h1:text-lg prose-h2:text-base prose-h3:text-sm prose-h4:text-sm prose-h2:text-indigo-700 prose-h3:text-emerald-700 prose-h4:text-amber-700 prose-h4:bg-amber-50 prose-h4:border-l-4 prose-h4:border-amber-400 prose-h4:pl-3 prose-h4:py-1 prose-h4:rounded-md prose-p:text-slate-700 prose-strong:text-slate-900 prose-ul:text-slate-700 prose-ol:text-slate-700 prose-li:text-slate-700 prose-code:text-slate-700 prose-pre:bg-slate-50 prose-pre:text-slate-700 prose-pre:whitespace-pre-wrap prose-pre:overflow-x-auto prose-code:break-words prose-table:border prose-table:border-slate-200 prose-th:border prose-th:border-slate-200 prose-td:border prose-td:border-slate-200 prose-th:bg-slate-100 prose-th:text-slate-700 prose-th:font-semibold">
                               <ReactMarkdown remarkPlugins={[remarkGfm]}>{auditJob.report_markdown}</ReactMarkdown>
                             </div>
                           </div>
@@ -881,10 +992,56 @@ export default function Auditor() {
                   </div>
                   {cimReport && (
                     <ScrollArea className="h-[45vh] rounded-lg border border-slate-200 mt-4 overflow-hidden">
-                      <div
+                      <iframe
                         id="auditor-cim-content"
-                        className="max-w-none text-slate-800 bg-white rounded p-4 min-h-[200px] border border-slate-200 shadow-sm"
-                        dangerouslySetInnerHTML={{ __html: getFormattedCIM(cimReport) }}
+                        title="CIM Report"
+                        srcDoc={withWatermark(getFormattedCIM(cimReport), samavedaWatermark)}
+                        className="w-full min-h-[45vh] border-0 bg-white rounded"
+                        sandbox="allow-same-origin"
+                      />
+                    </ScrollArea>
+                  )}
+                </div>
+              </TabsContent>
+
+              <TabsContent value="teaser" className="space-y-4">
+                <div className="rounded-xl border border-gold/20 p-6 bg-card/50 space-y-4">
+                  <h3 className="font-display text-xl font-semibold">Generate Teaser</h3>
+                  <p className="text-sm text-muted-foreground">
+                    Investment Teaser (2-page summary) from all documents in this session.
+                  </p>
+                  {teaserError && <p className="text-sm text-destructive">{teaserError}</p>}
+                  <div className="flex flex-wrap gap-2">
+                    <Button
+                      variant="gold"
+                      onClick={startTeaserGeneration}
+                      disabled={teaserIsRunning || documents.length === 0}
+                    >
+                      {teaserIsRunning ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : null}
+                      {teaserIsRunning ? 'Generating...' : teaserReport ? 'Regenerate' : 'Generate Teaser'}
+                    </Button>
+                    {teaserIsRunning && (
+                      <Button variant="destructive" onClick={() => teaserAbortRef.current?.abort()}>
+                        Stop
+                      </Button>
+                    )}
+                    <Button
+                      variant="outline"
+                      onClick={() => teaserReport && downloadTeaserPdf()}
+                      disabled={!teaserReport}
+                    >
+                      <Download className="w-4 h-4 mr-2" />
+                      Download Teaser PDF
+                    </Button>
+                  </div>
+                  {teaserReport && (
+                    <ScrollArea className="h-[45vh] rounded-lg border border-slate-200 mt-4 overflow-hidden">
+                      <iframe
+                        id="auditor-teaser-content"
+                        title="Teaser Report"
+                        srcDoc={withWatermark(getFormattedTeaser(teaserReport), samavedaWatermark)}
+                        className="w-full min-h-[45vh] border-0 bg-white rounded"
+                        sandbox="allow-same-origin"
                       />
                     </ScrollArea>
                   )}

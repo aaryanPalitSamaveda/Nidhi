@@ -80,73 +80,36 @@ export async function fetchAllFilesFromVault(vaultId: string): Promise<DocumentF
     }
     console.log(`Fetching all documents from vault: ${vaultId}`);
 
-    // Ensure user is authenticated (RLS requires auth.uid())
+    // Ensure user is authenticated
     let { data: { session }, error: sessionError } = await supabase.auth.getSession();
     if (sessionError || !session) {
-      console.error('No auth session - RLS may block document access:', sessionError?.message);
+      console.error('No auth session:', sessionError?.message);
       throw new Error('You must be logged in to fetch documents. Please sign in and try again.');
     }
-    // Refresh session if expired (helps avoid stale token issues)
+    // Refresh session if expired
     if (session?.user && session.expires_at && session.expires_at * 1000 < Date.now() + 60_000) {
       const { data: { session: refreshed } } = await supabase.auth.refreshSession();
       if (refreshed) session = refreshed;
     }
 
-    // Fetch all documents metadata (includes docs in all folders)
-    const { data: documents, error } = await supabase
-      .from('documents')
-      .select('id, name, file_path, file_size, file_type, created_at')
-      .eq('vault_id', vaultId);
-
-    if (error) {
-      console.error('Documents query error:', error.code, error.message, error.details);
-      throw new Error(`Failed to fetch documents: ${error.message}`);
-    }
-
-    if (!documents || documents.length === 0) {
-      console.log('No documents found in vault (query returned 0 rows)');
-      return [];
-    }
-
-    console.log(`Found ${documents.length} documents, downloading in parallel...`);
-
-    // Download all files in parallel for faster fetching
-    const results = await Promise.allSettled(
-      documents.map(async (doc) => {
-        const fileContent = await downloadFileContent(doc.file_path);
-        return {
-          name: doc.name,
-          path: doc.file_path,
-          size: doc.file_size || 0,
-          type: doc.file_type || 'unknown',
-          lastModified: doc.created_at,
-          content: fileContent,
-        };
-      })
-    );
-
-    const files: DocumentFile[] = [];
-    const failed: string[] = [];
-    results.forEach((result, i) => {
-      if (result.status === 'fulfilled') {
-        files.push(result.value);
-      } else {
-        const name = documents[i]?.name ?? 'unknown';
-        failed.push(name);
-        console.warn(`✗ Failed to download ${name}:`, result.reason);
-      }
+    // Use Edge Function (service role) to bypass storage RLS - fixes admin download failures
+    const { data, error } = await supabase.functions.invoke('auditor-public', {
+      body: { action: 'fetch-documents-by-vault', vaultId },
     });
-
-    // If we found documents in DB but all downloads failed, throw helpful error
-    if (documents.length > 0 && files.length === 0) {
-      throw new Error(
-        `Found ${documents.length} document(s) in vault but failed to download all. ` +
-        `Storage may be blocking access. Failed: ${failed.slice(0, 5).join(', ')}${failed.length > 5 ? '...' : ''}`
-      );
+    if (error) {
+      const msg = (data as { error?: string })?.error || error.message || 'Edge Function failed';
+      throw new Error(msg);
     }
-
-    console.log(`Successfully downloaded ${files.length}/${documents.length} files`);
-    return files;
+    const docs = (data as { documents?: Array<{ fileName: string; fileType: string; content: string }> })?.documents ?? [];
+    console.log(`Fetched ${docs.length} documents via Edge Function (service role)`);
+    return docs.map((d) => ({
+      name: d.fileName,
+      path: '',
+      size: 0,
+      type: d.fileType || 'application/octet-stream',
+      lastModified: '',
+      content: d.content,
+    }));
   } catch (error) {
     console.error('Error fetching files from vault:', error);
     throw error;
