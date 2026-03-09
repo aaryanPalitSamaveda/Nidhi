@@ -19,9 +19,10 @@ export async function fetchDocumentsViaAuditor(sessionId: string): Promise<Docum
   const { data: { user } } = await supabase.auth.getUser();
   const body = { action: 'fetch-documents', sessionId, ...(user?.id && { userId: user.id }) };
 
-  // 1. Try fraud backend when enabled
+  // 1. Try fraud backend when enabled (production or explicit)
+  const isProd = typeof window !== 'undefined' && !/localhost|127\.0\.0\.1/.test(window.location?.hostname ?? '');
   const url = import.meta.env.VITE_FRAUD_BACKEND_URL;
-  if (url && import.meta.env.VITE_USE_FRAUD_BACKEND !== 'false') {
+  if (url && (import.meta.env.VITE_USE_FRAUD_BACKEND === 'true' || isProd)) {
     const api = `${String(url).replace(/\/$/, '')}/api/auditor`;
     try {
       const res = await fetch(api, {

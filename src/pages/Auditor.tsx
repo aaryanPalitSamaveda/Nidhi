@@ -72,8 +72,9 @@ function capturePdfFromHtml(html: string, watermarkUrl: string, filename: string
   });
 }
 
-// Set VITE_USE_FRAUD_BACKEND=false in .env for localhost to avoid CORS (uses Supabase Edge Function)
-const USE_AUDITOR_BACKEND = import.meta.env.VITE_FRAUD_BACKEND_URL && import.meta.env.VITE_USE_FRAUD_BACKEND !== 'false';
+// Use fraud backend in production (CORS works); use Edge Function on localhost to avoid cross-origin
+const isProd = typeof window !== 'undefined' && !/localhost|127\.0\.0\.1/.test(window.location?.hostname ?? '');
+const USE_AUDITOR_BACKEND = import.meta.env.VITE_FRAUD_BACKEND_URL && (import.meta.env.VITE_USE_FRAUD_BACKEND === 'true' || isProd);
 const AUDITOR_API = USE_AUDITOR_BACKEND ? `${String(import.meta.env.VITE_FRAUD_BACKEND_URL).replace(/\/$/, '')}/api/auditor` : null;
 
 async function auditorInvoke(body: Record<string, unknown>) {
@@ -484,7 +485,7 @@ export default function Auditor() {
   }, [session?.sessionId, toast]);
 
   useEffect(() => {
-    if (!auditJob || auditJob.status === 'completed' || auditJob.status === 'failed' || auditJob.status === 'cancelled') return;
+    if (!auditJob || auditJob.status === 'completed' || auditJob.status === 'failed' || auditJob.status === 'cancelled' || auditJob.report_markdown) return;
     const runBatch = async () => {
       try {
         const data = await auditorInvoke({ action: 'run-audit-batch', jobId: auditJob.id });
@@ -492,7 +493,12 @@ export default function Auditor() {
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
         console.warn('[auditor] run-audit-batch failed:', msg);
-        setAuditError(msg);
+        if (!auditJob.report_markdown) {
+          setAuditError(msg);
+          try {
+            await fetchStatus();
+          } catch (_) {}
+        }
       }
     };
     pollRef.current = setInterval(runBatch, 4000);
@@ -500,7 +506,11 @@ export default function Auditor() {
     return () => {
       if (pollRef.current) clearInterval(pollRef.current);
     };
-  }, [auditJob?.id, auditJob?.status]);
+  }, [auditJob?.id, auditJob?.status, auditJob?.report_markdown, fetchStatus]);
+
+  useEffect(() => {
+    if (auditJob?.report_markdown) setAuditError(null);
+  }, [auditJob?.report_markdown]);
 
   useEffect(() => {
     if (auditJob?.status === 'running' || auditJob?.status === 'queued') fetchStatus();

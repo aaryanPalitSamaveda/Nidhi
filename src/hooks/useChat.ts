@@ -308,11 +308,23 @@ const useChat = ({ userId, vaultId }: UseChatProps = {}): UseChatReturn => {
           hasDocumentContext: response.hasDocumentContext,
         };
         setMessages(prev => [...prev, assistantMessage]);
+      } else if (response.success && !response.message) {
+        setError('Chat service returned no response. The backend may be starting up (cold start) or overloaded. Please try again in a moment.');
       } else {
         throw new Error(response.error || 'Failed to get response');
       }
-    } catch (err) {
-      setError('Failed to send message. Please try again.');
+    } catch (err: any) {
+      const isTimeout = err?.code === 'ECONNABORTED' || err?.message?.includes('timeout');
+      const isNetwork = err?.message === 'Network Error' || err?.code === 'ERR_NETWORK';
+      const isCors = err?.message?.includes('CORS') || (isNetwork && !import.meta.env.DEV);
+      const msg = isTimeout
+        ? 'The chat service took too long to respond (it may be starting up from sleep). Please try again — the next attempt should be faster.'
+        : isCors
+          ? 'Chat service unreachable. In production, the chatbot backend must allow your domain in CORS (Access-Control-Allow-Origin).'
+          : isNetwork
+            ? 'Network error. The chat service may be down or starting up. Please try again.'
+            : err?.response?.data?.error || err?.message || 'Failed to send message. Please try again.';
+      setError(msg);
       console.error('Send message error:', err);
     } finally {
       setIsLoading(false);

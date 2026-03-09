@@ -74,10 +74,10 @@ export interface ClearChatResponse {
   error?: string;
 }
 
-// Create axios instance
+// Create axios instance (45s timeout: fail faster on cold start, user can retry)
 const api: AxiosInstance = axios.create({
   baseURL: API_BASE_URL,
-  timeout: 120000,
+  timeout: 45000,
   headers: {
     'Content-Type': 'application/json',
   },
