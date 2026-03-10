@@ -1,10 +1,8 @@
 import axios, { AxiosInstance, AxiosError, InternalAxiosRequestConfig, AxiosResponse } from 'axios';
 import { supabase } from '@/integrations/supabase/client';
 
-// In dev, use /api (proxied to chatbot) to avoid CORS; in prod, use full URL
-const API_BASE_URL = import.meta.env.DEV
-  ? '/api'
-  : (import.meta.env.VITE_API_URL || 'http://localhost:5000/api');
+// Use /api (Vite proxy in dev, Vercel rewrite in prod) - avoids CORS with chatbot backend
+const API_BASE_URL = '/api';
 
 // Types
 export interface ChatMessage {
