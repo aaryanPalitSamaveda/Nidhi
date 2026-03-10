@@ -72,23 +72,17 @@ function capturePdfFromHtml(html: string, watermarkUrl: string, filename: string
   });
 }
 
-// In production: use /api/auditor (Vercel proxy) to avoid CORS and Edge Function timeout.
-// In dev: use Edge Function (Vite has no proxy for auditor).
-const isProd = typeof window !== 'undefined' && !/localhost|127\.0\.0\.1/.test(window.location?.hostname ?? '');
-const USE_AUDITOR_BACKEND = isProd || (import.meta.env.VITE_FRAUD_BACKEND_URL && import.meta.env.VITE_USE_FRAUD_BACKEND === 'true');
-const AUDITOR_API = USE_AUDITOR_BACKEND
-  ? (isProd ? '/api/auditor' : `${String(import.meta.env.VITE_FRAUD_BACKEND_URL || '').replace(/\/$/, '')}/api/auditor`)
-  : null;
+// Use Edge Function by default (reliable). Use fraud backend only when explicitly enabled.
+const USE_AUDITOR_BACKEND = import.meta.env.VITE_FRAUD_BACKEND_URL && import.meta.env.VITE_USE_FRAUD_BACKEND === 'true';
+const AUDITOR_API = USE_AUDITOR_BACKEND ? `${String(import.meta.env.VITE_FRAUD_BACKEND_URL).replace(/\/$/, '')}/api/auditor` : null;
 
 async function auditorInvoke(body: Record<string, unknown>) {
   if (AUDITOR_API) {
-    const { data: { session } } = await supabase.auth.getSession();
-    const authBody = { ...body, ...(session?.user?.id && { userId: session.user.id }) };
-    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-    if (session?.access_token) headers['Authorization'] = `Bearer ${session.access_token}`;
+    const { data: { user } } = await supabase.auth.getUser();
+    const authBody = { ...body, ...(user?.id && { userId: user.id }) };
     const res = await fetch(AUDITOR_API, {
       method: 'POST',
-      headers,
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(authBody),
     });
     const data = await res.json().catch(() => ({}));

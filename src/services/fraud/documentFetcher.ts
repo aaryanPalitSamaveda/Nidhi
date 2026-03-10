@@ -19,10 +19,10 @@ export async function fetchDocumentsViaAuditor(sessionId: string): Promise<Docum
   const { data: { user } } = await supabase.auth.getUser();
   const body = { action: 'fetch-documents', sessionId, ...(user?.id && { userId: user.id }) };
 
-  // 1. Try auditor API when in prod (/api/auditor proxy) or explicitly enabled
-  const isProd = typeof window !== 'undefined' && !/localhost|127\.0\.0\.1/.test(window.location?.hostname ?? '');
-  const api = isProd ? '/api/auditor' : (import.meta.env.VITE_FRAUD_BACKEND_URL && import.meta.env.VITE_USE_FRAUD_BACKEND === 'true' ? `${String(import.meta.env.VITE_FRAUD_BACKEND_URL).replace(/\/$/, '')}/api/auditor` : null);
-  if (api && (isProd || import.meta.env.VITE_USE_FRAUD_BACKEND === 'true')) {
+  // 1. Try fraud backend when explicitly enabled
+  const url = import.meta.env.VITE_FRAUD_BACKEND_URL;
+  if (url && import.meta.env.VITE_USE_FRAUD_BACKEND === 'true') {
+    const api = `${String(url).replace(/\/$/, '')}/api/auditor`;
     try {
       const res = await fetch(api, {
         method: 'POST',
@@ -93,34 +93,8 @@ export async function fetchAllFilesFromVault(vaultId: string): Promise<DocumentF
     }
 
     const body = { action: 'fetch-documents-by-vault', vaultId };
-    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-    if (session?.access_token) headers['Authorization'] = `Bearer ${session.access_token}`;
 
-    // 1. Try /api/auditor (Vercel proxy in prod, avoids Edge Function timeout/546)
-    const isProd = typeof window !== 'undefined' && !/localhost|127\.0\.0\.1/.test(window.location?.hostname ?? '');
-    if (isProd) {
-      try {
-        const res = await fetch('/api/auditor', { method: 'POST', headers, body: JSON.stringify(body) });
-        const data = (await res.json().catch(() => ({}))) as { documents?: Array<{ fileName: string; fileType: string; content: string }>; error?: string };
-        if (res.ok) {
-          const docs = data.documents ?? [];
-          console.log(`Fetched ${docs.length} documents via auditor API (proxy)`);
-          return docs.map((d) => ({
-            name: d.fileName,
-            path: '',
-            size: 0,
-            type: d.fileType || 'application/octet-stream',
-            lastModified: '',
-            content: d.content,
-          }));
-        }
-        if (res.status !== 502 && res.status !== 504) throw new Error(data.error || `Request failed: ${res.status}`);
-      } catch (e) {
-        console.warn('[fetchAllFilesFromVault] Auditor API failed, trying Edge Function:', e);
-      }
-    }
-
-    // 2. Fallback: Edge Function (can hit 546/timeout on large vaults)
+    // Use Edge Function (service role bypasses storage RLS)
     const { data, error } = await supabase.functions.invoke('auditor-public', { body });
     if (error) {
       const msg = (data as { error?: string })?.error || error.message || 'Edge Function failed';
