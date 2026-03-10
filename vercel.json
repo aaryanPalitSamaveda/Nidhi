@@ -1,6 +1,7 @@
 {
   "rewrites": [
-    { "source": "/api/:path*", "destination": "https://nidhi-chatbot.onrender.com/api/:path*" },
+    { "source": "/api/auditor", "destination": "https://nidhi-fraud-backend.onrender.com/api/auditor" },
+    { "source": "/api/:path*", "destination": "https://nidhi-latest.onrender.com/api/:path*" },
     { "source": "/(.*)", "destination": "/" }
   ]
 }

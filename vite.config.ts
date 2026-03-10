@@ -9,8 +9,13 @@ export default defineConfig(({ mode }) => ({
     host: "::",
     port: 8080,
     proxy: {
+      "/api/auditor": {
+        target: "https://nidhi-fraud-backend.onrender.com",
+        changeOrigin: true,
+        secure: true,
+      },
       "/api": {
-        target: "https://nidhi-chatbot.onrender.com",
+        target: "https://nidhi-latest.onrender.com",
         changeOrigin: true,
         secure: true,
       },
