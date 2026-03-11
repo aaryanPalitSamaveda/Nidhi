@@ -214,6 +214,7 @@ const useChat = ({ userId, vaultId }: UseChatProps = {}): UseChatReturn => {
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
   const sessionIdRef = useRef<string | null>(null);
+  const isPollingRef = useRef(false);
   
   // Store current vaultId in ref for sendMessage
   const vaultIdRef = useRef<string | null | undefined>(vaultId);
@@ -240,12 +241,15 @@ const useChat = ({ userId, vaultId }: UseChatProps = {}): UseChatReturn => {
     try {
       const response = await chatAPI.getChatHistory(sessionId);
       if (response.success && response.messages.length > 0) {
-        setMessages(response.messages.map(msg => ({
-          id: uuidv4(),
-          role: msg.role,
-          content: msg.content,
-          timestamp: new Date(msg.timestamp),
-        })));
+        setMessages(response.messages.map(msg => {
+          const t = msg.timestamp;
+          let d = new Date();
+          if (t) {
+            const parsed = typeof t === 'string' ? new Date(t) : t instanceof Date ? t : new Date();
+            if (!isNaN(parsed.getTime())) d = parsed;
+          }
+          return { id: uuidv4(), role: msg.role, content: msg.content, timestamp: d };
+        }));
       } else {
         addWelcomeMessage(isDocumentMode);
       }
@@ -314,22 +318,69 @@ const useChat = ({ userId, vaultId }: UseChatProps = {}): UseChatReturn => {
         throw new Error(response.error || 'Failed to get response');
       }
     } catch (err: any) {
-      const isTimeout = err?.code === 'ECONNABORTED' || err?.message?.includes('timeout');
-      const isNetwork = err?.message === 'Network Error' || err?.code === 'ERR_NETWORK';
-      const isCors = err?.message?.includes('CORS') || (isNetwork && !import.meta.env.DEV);
-      const msg = isTimeout
-        ? 'The chat service took too long to respond (it may be starting up from sleep). Please try again — the next attempt should be faster.'
-        : isCors
-          ? 'Chat service unreachable. In production, the chatbot backend must allow your domain in CORS (Access-Control-Allow-Origin).'
-          : isNetwork
-            ? 'Network error. The chat service may be down or starting up. Please try again.'
-            : err?.response?.data?.error || err?.message || 'Failed to send message. Please try again.';
-      setError(msg);
       console.error('Send message error:', err);
+      const sid = sessionIdRef.current;
+      if (sid) {
+        isPollingRef.current = true;
+        // Backend may still be processing (cold start). Poll for response - keep loading, no error yet.
+        const expectedCount = messages.length + 2; // +1 user msg we added, +1 assistant response we're waiting for
+        const pollStart = Date.now();
+        const pollMs = 60000;
+        const pollInterval = 4000;
+        const poll = async () => {
+          if (Date.now() - pollStart > pollMs) {
+            const isTimeout = err?.code === 'ECONNABORTED' || err?.message?.includes('timeout');
+            const msg = isTimeout
+              ? 'The chat service took too long. Please try again — the next attempt should be faster.'
+              : err?.response?.data?.error || err?.message || 'Failed to send message. Please try again.';
+            setError(msg);
+            isPollingRef.current = false;
+            setIsLoading(false);
+            return;
+          }
+          try {
+            const res = await chatAPI.getChatHistory(sid);
+            if (res.success && res.messages?.length >= expectedCount) {
+              isPollingRef.current = false;
+              const parsed = res.messages.map((m) => ({
+                id: uuidv4(),
+                role: m.role,
+                content: m.content,
+                timestamp: (() => {
+                  const t = m.timestamp;
+                  if (!t) return new Date();
+                  const d = typeof t === 'string' ? new Date(t) : t instanceof Date ? t : new Date();
+                  return isNaN(d.getTime()) ? new Date() : d;
+                })(),
+              }));
+              setMessages(parsed);
+              setError(null);
+              setIsLoading(false);
+              return;
+            }
+          } catch (_) {}
+          setTimeout(poll, pollInterval);
+        };
+        setTimeout(poll, pollInterval);
+        return; // Don't run finally - we're polling, keep loading
+      } else {
+        const isTimeout = err?.code === 'ECONNABORTED' || err?.message?.includes('timeout');
+        const isNetwork = err?.message === 'Network Error' || err?.code === 'ERR_NETWORK';
+        const isCors = err?.message?.includes('CORS') || (isNetwork && !import.meta.env.DEV);
+        const msg = isTimeout
+          ? 'The chat service took too long. Please try again.'
+          : isCors
+            ? 'Chat service unreachable. Please try again later.'
+            : isNetwork
+              ? 'Network error. Please try again.'
+              : err?.response?.data?.error || err?.message || 'Failed to send message. Please try again.';
+        setError(msg);
+        setIsLoading(false);
+      }
     } finally {
-      setIsLoading(false);
+      if (!isPollingRef.current) setIsLoading(false);
     }
-  }, [isLoading]);
+  }, [isLoading, messages.length]);
 
   const clearChat = useCallback(async (): Promise<void> => {
     try {

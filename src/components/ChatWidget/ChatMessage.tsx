@@ -77,13 +77,16 @@ const ChatMessage: React.FC<ChatMessageProps> = ({ message }) => {
           </div>
         </div>
         
-        {/* Timestamp */}
-        <p className={`text-xs mt-1 text-slate-400 ${isUser ? 'text-right' : 'text-left'}`}>
-          {new Date(message.timestamp).toLocaleTimeString([], {
-            hour: '2-digit',
-            minute: '2-digit'
-          })}
-        </p>
+        {/* Timestamp - hide if invalid */}
+        {(() => {
+          const d = message.timestamp instanceof Date ? message.timestamp : new Date(message.timestamp);
+          const valid = !isNaN(d.getTime());
+          return valid ? (
+            <p className={`text-xs mt-1 text-slate-400 ${isUser ? 'text-right' : 'text-left'}`}>
+              {d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+            </p>
+          ) : null;
+        })()}
       </div>
 
       {/* User Avatar */}
