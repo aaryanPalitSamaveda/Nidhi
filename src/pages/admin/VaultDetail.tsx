@@ -895,7 +895,7 @@ function VaultDetailInner() {
 
     try {
       // Create root folder for the selected directory (browser doesn't give us the folder name)
-      const rootFolderName = `Folder ${new Date().toLocaleDateString()} ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
+      const rootFolderName = filesWithPaths[0].relativePath.split('/')[0];
       const { data: rootFolder, error: rootError } = await supabase
         .from('folders')
         .insert({
