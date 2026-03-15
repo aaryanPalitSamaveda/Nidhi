@@ -33,6 +33,7 @@ import {
 import { useToast } from '@/hooks/use-toast';
 import { useAuth } from '@/contexts/AuthContext';
 import { PasswordInput } from '@/components/ui/password-input';
+import { CLIENT_TEMP_PASSWORD } from '@/lib/constants';
 import { 
   Plus, 
   Search, 
@@ -171,10 +172,11 @@ export default function AdminUsers() {
   };
 
   const handleAddUser = async () => {
-    if (!newUserEmail || !newUserPassword) {
+    const passwordToUse = newUserRole === 'investor' ? CLIENT_TEMP_PASSWORD : newUserPassword;
+    if (!newUserEmail || !passwordToUse) {
       toast({
         title: 'Validation Error',
-        description: 'Email and password are required',
+        description: newUserRole === 'investor' ? 'Email is required' : 'Email and password are required',
         variant: 'destructive',
       });
       return;
@@ -182,10 +184,10 @@ export default function AdminUsers() {
 
     try {
       // Create user through Supabase Auth
-      // The trigger will automatically create the profile
+      // Clients (investors) use default temp password; admins/sellers use custom password
       const { data: authData, error: authError } = await supabase.auth.signUp({
         email: newUserEmail,
-        password: newUserPassword,
+        password: passwordToUse,
         options: {
           data: {
             full_name: newUserFullName || null,
@@ -352,11 +354,13 @@ export default function AdminUsers() {
       }
 
       // Show password to admin in a dialog so they can copy and share it
-      setCreatedUserPassword({ email: newUserEmail, password: newUserPassword });
+      setCreatedUserPassword({ email: newUserEmail, password: passwordToUse });
       
       toast({
         title: 'User created successfully',
-        description: `User ${newUserEmail} has been created. They can sign in immediately. Check the dialog to copy the password.`,
+        description: newUserRole === 'investor'
+          ? `Client ${newUserEmail} can log in with the default temp password. They can change it from Settings.`
+          : `User ${newUserEmail} has been created. They can sign in immediately. Check the dialog to copy the password.`,
         duration: 5000,
       });
 
@@ -606,16 +610,6 @@ export default function AdminUsers() {
                   />
                 </div>
                 <div className="space-y-1.5">
-                  <Label htmlFor="password" className="text-sm">Password *</Label>
-                  <PasswordInput
-                    id="password"
-                    placeholder="••••••••"
-                    value={newUserPassword}
-                    onChange={(e) => setNewUserPassword(e.target.value)}
-                    className="bg-input border-gold/20"
-                  />
-                </div>
-                <div className="space-y-1.5">
                   <Label htmlFor="role" className="text-sm">Role</Label>
                   <Select value={newUserRole} onValueChange={(value: 'admin' | 'seller' | 'investor') => setNewUserRole(value)}>
                     <SelectTrigger className="bg-input border-gold/20">
@@ -643,6 +637,23 @@ export default function AdminUsers() {
                     </SelectContent>
                   </Select>
                 </div>
+                {newUserRole !== 'investor' && (
+                  <div className="space-y-1.5">
+                    <Label htmlFor="password" className="text-sm">Password *</Label>
+                    <PasswordInput
+                      id="password"
+                      placeholder="••••••••"
+                      value={newUserPassword}
+                      onChange={(e) => setNewUserPassword(e.target.value)}
+                      className="bg-input border-gold/20"
+                    />
+                  </div>
+                )}
+                {newUserRole === 'investor' && (
+                  <p className="text-sm text-muted-foreground bg-gold/5 border border-gold/20 rounded-lg px-3 py-2">
+                    Clients use the default temp password. They can log in and change it from Settings.
+                  </p>
+                )}
                 <div className="space-y-1.5">
                   <Label htmlFor="fullName" className="text-sm">Full Name (Optional)</Label>
                   <Input
@@ -681,7 +692,7 @@ export default function AdminUsers() {
                 <Button variant="outline" onClick={() => setIsAddDialogOpen(false)}>
                   Cancel
                 </Button>
-                <Button variant="gold" onClick={handleAddUser} disabled={!newUserEmail || !newUserPassword}>
+                <Button variant="gold" onClick={handleAddUser} disabled={!newUserEmail || (newUserRole !== 'investor' && !newUserPassword)}>
                   Create User
                 </Button>
               </DialogFooter>

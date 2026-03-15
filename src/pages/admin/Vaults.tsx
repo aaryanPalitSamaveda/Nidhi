@@ -309,7 +309,7 @@ export default function AdminVaults() {
 
       if (vaultError) throw vaultError;
 
-      // If a client is assigned, create permissions with full access
+      // If a client is assigned, create permissions with full access and set their temp password
       if (newVault.clientId) {
         await supabase
           .from('vault_permissions')
@@ -321,6 +321,10 @@ export default function AdminVaults() {
             can_upload: true,
             can_delete: true, // Clients get full access including delete
           });
+        // Set client temp password so they can log in immediately
+        await supabase.functions.invoke('admin-set-client-password', {
+          body: { userId: newVault.clientId },
+        });
       }
 
       toast({

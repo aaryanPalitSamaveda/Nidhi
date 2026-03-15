@@ -14,7 +14,9 @@
     "confirm-emails": "node scripts/confirm-user-emails.js",
     "migrate-storage": "node scripts/migrate-storage.js",
     "migrate-database": "node scripts/migrate-database.js",
-    "set-admin-passwords": "node scripts/set-admin-passwords.js"
+    "set-admin-passwords": "node scripts/set-admin-passwords.js",
+    "set-client-passwords": "node scripts/set-client-passwords.js",
+    "set-all-passwords": "node scripts/set-all-user-passwords.js"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.72.1",

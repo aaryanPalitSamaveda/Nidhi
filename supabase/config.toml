@@ -11,3 +11,7 @@ verify_jwt = false
 # audit-vault - called by fraud backend with service role; skip gateway JWT check
 [functions.audit-vault]
 verify_jwt = false
+
+# admin-set-client-password - admin only, sets client temp password
+[functions.admin-set-client-password]
+verify_jwt = true
