@@ -15,3 +15,7 @@ verify_jwt = false
 # admin-set-client-password - admin only, sets client temp password
 [functions.admin-set-client-password]
 verify_jwt = true
+
+# admin-create-user - admin only, creates users without sending email (bypasses rate limit)
+[functions.admin-create-user]
+verify_jwt = true

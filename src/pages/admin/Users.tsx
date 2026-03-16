@@ -183,178 +183,29 @@ export default function AdminUsers() {
     }
 
     try {
-      // Create user through Supabase Auth
-      // Clients (investors) use default temp password; admins/sellers use custom password
-      const { data: authData, error: authError } = await supabase.auth.signUp({
-        email: newUserEmail,
-        password: passwordToUse,
-        options: {
-          data: {
-            full_name: newUserFullName || null,
-          },
-          emailRedirectTo: undefined, // Don't send confirmation email
+      // Use Edge Function (Admin API) - bypasses email rate limit, no confirmation email sent
+      const { data, error } = await supabase.functions.invoke('admin-create-user', {
+        body: {
+          email: newUserEmail.trim(),
+          password: newUserRole === 'investor' ? undefined : passwordToUse,
+          fullName: newUserFullName || null,
+          companyName: newUserCompanyName || null,
+          phone: newUserPhone || null,
+          role: newUserRole,
         },
       });
 
-      if (authError) throw authError;
+      if (error) throw error;
 
-      if (!authData.user) {
-        throw new Error('User creation failed - no user data returned');
-      }
+      const result = data as { error?: string; success?: boolean; email?: string; password?: string };
+      if (result?.error) throw new Error(result.error);
+      if (!result?.success) throw new Error('User creation failed');
 
-      const userId = authData.user.id;
-
-      // CRITICAL: Verify user exists in auth.users by checking if profile was created
-      // The trigger creates the profile AFTER user is inserted into auth.users
-      // So if profile exists, user definitely exists in auth.users
-      // This is the REAL fix - we verify the user is committed before proceeding
-      let userExists = false;
-      let retryCount = 0;
-      const maxRetries = 10;
-
-      while (!userExists && retryCount < maxRetries) {
-        const { data: profile, error: profileCheckError } = await supabase
-          .from('profiles')
-          .select('id')
-          .eq('id', userId)
-          .maybeSingle();
-
-        if (profile) {
-          // Profile exists = user exists in auth.users (foreign key constraint satisfied)
-          userExists = true;
-        } else if (profileCheckError && profileCheckError.code === 'PGRST116') {
-          // Profile doesn't exist yet - trigger hasn't fired or user not committed
-          retryCount++;
-          if (retryCount < maxRetries) {
-            await new Promise(resolve => setTimeout(resolve, 300));
-          }
-        } else {
-          // Other error - might be RLS issue, but if we can't check, assume user exists
-          // (since signUp returned a user)
-          userExists = true;
-        }
-      }
-
-      if (!userExists) {
-        throw new Error('User was not created in database. Please try again.');
-      }
-
-      // Now update profile with additional information (company, phone)
-      const { error: profileError } = await supabase
-        .from('profiles')
-        .update({
-          full_name: newUserFullName || null,
-          company_name: newUserCompanyName || null,
-          phone: newUserPhone || null,
-        })
-        .eq('id', userId);
-
-      // If update failed, try insert (shouldn't happen if trigger worked)
-      if (profileError && profileError.code !== 'PGRST116') {
-        const { error: insertError } = await supabase
-          .from('profiles')
-          .insert({
-            id: userId,
-            email: newUserEmail,
-            full_name: newUserFullName || null,
-            company_name: newUserCompanyName || null,
-            phone: newUserPhone || null,
-          });
-
-        if (insertError && insertError.code !== '23505') {
-          throw new Error(`Failed to create profile: ${insertError.message}`);
-        }
-      }
-
-      // CRITICAL: Wait additional time for user to be fully committed to auth.users
-      // Even though profile exists, the user might not be visible to foreign key constraints yet
-      await new Promise(resolve => setTimeout(resolve, 2000));
-
-      // Confirm user email so they can log in immediately (admin-created users don't need email confirmation)
-      // We'll retry to ensure the confirmation is processed by Supabase Auth
-      let emailConfirmed = false;
-      let confirmAttempts = 0;
-      const maxConfirmAttempts = 3;
-
-      while (!emailConfirmed && confirmAttempts < maxConfirmAttempts) {
-        const { data: confirmResult, error: confirmError } = await supabase.rpc('confirm_user_email', {
-          target_user_id: userId,
-        });
-
-        if (confirmError) {
-          if (confirmError.message?.includes('Could not find the function')) {
-            // Function doesn't exist yet - log warning but continue
-            console.warn('confirm_user_email function not found. Please run the migration.');
-            emailConfirmed = true; // Assume confirmed if function doesn't exist
-          } else {
-            // Other error - log but retry
-            console.warn(`Failed to confirm user email (attempt ${confirmAttempts + 1}/${maxConfirmAttempts}):`, confirmError);
-            confirmAttempts++;
-            if (confirmAttempts < maxConfirmAttempts) {
-              await new Promise(resolve => setTimeout(resolve, 1000));
-            }
-          }
-        } else if (confirmResult && !confirmResult.success) {
-          // Function returned but with error - retry
-          console.warn(`Failed to confirm user email (attempt ${confirmAttempts + 1}/${maxConfirmAttempts}):`, confirmResult.error);
-          confirmAttempts++;
-          if (confirmAttempts < maxConfirmAttempts) {
-            await new Promise(resolve => setTimeout(resolve, 1000));
-          }
-        } else {
-          // Success! The email confirmation has been set in the database
-          emailConfirmed = true;
-          console.log('User email confirmed successfully');
-          
-          // CRITICAL: Wait for Supabase Auth to process the email confirmation
-          // This is necessary because Supabase Auth may cache the confirmation state
-          // and needs a moment to propagate the change
-          await new Promise(resolve => setTimeout(resolve, 1500));
-        }
-      }
-
-      if (!emailConfirmed) {
-        console.warn('Email confirmation may not have completed. User may need to wait a few seconds before signing in.');
-      }
-
-      // Assign role using database function - this handles foreign key issues server-side
-      const { data: roleResult, error: roleError } = await supabase.rpc('assign_user_role', {
-        target_user_id: userId,
-        target_role: newUserRole,
+      // Edge Function handles profile, role, email_confirm - no email sent (bypasses rate limit)
+      setCreatedUserPassword({
+        email: result.email || newUserEmail,
+        password: result.password || passwordToUse,
       });
-
-      // If function doesn't exist, fall back to direct insert
-      if (roleError && (roleError.message?.includes('Could not find the function') || roleError.code === '42883')) {
-        // Fallback: Direct insert with retry
-        await supabase.from('user_roles').delete().eq('user_id', userId);
-        
-        const { error: insertError } = await supabase
-          .from('user_roles')
-          .insert({ user_id: userId, role: newUserRole });
-
-        if (insertError) {
-          if (insertError.code === '23503') {
-            // Foreign key - wait and retry once
-            await new Promise(resolve => setTimeout(resolve, 1000));
-            const { error: retryError } = await supabase
-              .from('user_roles')
-              .insert({ user_id: userId, role: newUserRole });
-            
-            if (retryError && retryError.code !== '23505') {
-              throw new Error(`Failed to assign role: ${retryError.message}`);
-            }
-          } else if (insertError.code !== '23505') {
-            throw new Error(`Failed to assign role: ${insertError.message}`);
-          }
-        }
-      } else if (roleError) {
-        throw new Error(`Failed to assign role: ${roleError.message}`);
-      } else if (roleResult && !roleResult.success) {
-        throw new Error(`Failed to assign role: ${roleResult.error || 'Unknown error'}`);
-      }
-
-      // Show password to admin in a dialog so they can copy and share it
-      setCreatedUserPassword({ email: newUserEmail, password: passwordToUse });
       
       toast({
         title: 'User created successfully',
