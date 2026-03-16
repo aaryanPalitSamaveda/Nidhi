@@ -13,6 +13,7 @@
     "create-client": "node scripts/create-client-user.js",
     "confirm-emails": "node scripts/confirm-user-emails.js",
     "migrate-storage": "node scripts/migrate-storage.js",
+    "migrate-d2c-dataroom": "node scripts/migrate-d2c-dataroom.js",
     "migrate-database": "node scripts/migrate-database.js",
     "set-admin-passwords": "node scripts/set-admin-passwords.js",
     "set-client-passwords": "node scripts/set-client-passwords.js",
