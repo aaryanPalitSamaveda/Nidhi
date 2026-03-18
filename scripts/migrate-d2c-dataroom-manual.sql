@@ -3,6 +3,9 @@
 -- Run this in: https://supabase.com/dashboard/project/unyiuyzhteeuoyujqpbf/sql
 -- =============================================================================
 
+-- FIX: 400 / StorageUnknownError when previewing or downloading ANY document?
+-- Run the migration: supabase/migrations/20260314000000_FIX_STORAGE_DOWNLOAD_400.sql
+
 -- DIAGNOSTIC: If D2C vault shows but is empty, check for duplicate vaults:
 -- SELECT v.id, v.name, (SELECT COUNT(*) FROM folders f WHERE f.vault_id = v.id) AS folders, (SELECT COUNT(*) FROM documents d WHERE d.vault_id = v.id) AS docs FROM vaults v WHERE v.name ILIKE '%D2C%';
 
