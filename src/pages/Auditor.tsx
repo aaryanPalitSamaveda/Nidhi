@@ -433,6 +433,118 @@ function GamifiedAuditProgress({ auditJob, documents: docs }: { auditJob: AuditJ
   );
 }
 
+/* ── CIM Generation Progress ── */
+const CIM_TIPS = ['Extracting company overview from uploaded documents...','Analyzing revenue streams and business model...','Compiling financial highlights and key metrics...','Identifying growth drivers and market positioning...','Structuring management team and organizational data...','Building investment thesis and value proposition...','Formatting deal structure and terms...','Cross-referencing financials for CIM accuracy...','Generating executive summary...','Finalizing confidential information memorandum...'];
+
+function CimGenerationProgress({ isRunning }: { isRunning: boolean }) {
+  const [tipIndex, setTipIndex] = useState(0);
+  const [progress, setProgress] = useState(0);
+  const progressRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  useEffect(() => {
+    if (!isRunning) { setProgress(0); return; }
+    setProgress(0);
+    progressRef.current = setInterval(() => {
+      setProgress((p) => {
+        if (p >= 95) return 95;
+        const increment = Math.random() * 3 + 0.5;
+        return Math.min(95, p + increment);
+      });
+    }, 800);
+    return () => { if (progressRef.current) clearInterval(progressRef.current); };
+  }, [isRunning]);
+
+  useEffect(() => {
+    if (!isRunning) return;
+    const timer = setInterval(() => setTipIndex((i) => (i + 1) % CIM_TIPS.length), 4000);
+    return () => clearInterval(timer);
+  }, [isRunning]);
+
+  if (!isRunning) return null;
+
+  return (
+    <div className="sv-card space-y-4" style={{ padding: 20, animation: 'svScaleIn 0.4s ease-out' }}>
+      <div className="flex items-center gap-4">
+        <div style={{ width: 48, height: 48, borderRadius: 14, background: '#eff6ff', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 18 }}>
+          <FileText style={{ width: 22, height: 22, color: '#1e3a8a', animation: 'svPulse 2s ease-in-out infinite' }} />
+        </div>
+        <div style={{ flex: 1 }}>
+          <div className="flex items-center justify-between" style={{ marginBottom: 6 }}>
+            <span style={{ fontSize: 13, fontWeight: 600, color: '#0f172a' }}>Generating CIM</span>
+            <span style={{ fontSize: 11, fontWeight: 600, color: '#1e3a8a' }}>{Math.round(progress)}%</span>
+          </div>
+          <div className="sv-progress-track">
+            <div className="sv-progress-fill-navy" style={{ width: `${progress}%` }} />
+          </div>
+        </div>
+      </div>
+      <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12, padding: '12px 16px', borderRadius: 12, background: '#f8fafc', border: '1px solid #e2e8f0' }}>
+        <Sparkles style={{ width: 16, height: 16, color: '#1e3a8a', flexShrink: 0, marginTop: 2, animation: 'svPulse 2s ease-in-out infinite' }} />
+        <div>
+          <p style={{ fontSize: 10, fontWeight: 600, color: '#1e3a8a', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 2 }}>AI is working</p>
+          <p style={{ fontSize: 12, color: '#64748b', lineHeight: 1.5, animation: 'svFadeIn 0.5s ease-out' }} key={tipIndex}>{CIM_TIPS[tipIndex]}</p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ── Teaser Generation Progress ── */
+const TEASER_TIPS = ['Distilling key investment highlights...','Crafting compelling company snapshot...','Summarizing financial performance metrics...','Identifying unique selling propositions...','Building deal overview and structure...','Formatting teaser for investor distribution...','Extracting market opportunity data...','Highlighting competitive advantages...','Generating anonymized company profile...','Finalizing investment teaser document...'];
+
+function TeaserGenerationProgress({ isRunning }: { isRunning: boolean }) {
+  const [tipIndex, setTipIndex] = useState(0);
+  const [progress, setProgress] = useState(0);
+  const progressRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  useEffect(() => {
+    if (!isRunning) { setProgress(0); return; }
+    setProgress(0);
+    progressRef.current = setInterval(() => {
+      setProgress((p) => {
+        if (p >= 95) return 95;
+        const increment = Math.random() * 4 + 0.8;
+        return Math.min(95, p + increment);
+      });
+    }, 600);
+    return () => { if (progressRef.current) clearInterval(progressRef.current); };
+  }, [isRunning]);
+
+  useEffect(() => {
+    if (!isRunning) return;
+    const timer = setInterval(() => setTipIndex((i) => (i + 1) % TEASER_TIPS.length), 3500);
+    return () => clearInterval(timer);
+  }, [isRunning]);
+
+  if (!isRunning) return null;
+
+  return (
+    <div className="sv-card space-y-4" style={{ padding: 20, animation: 'svScaleIn 0.4s ease-out' }}>
+      <div className="flex items-center gap-4">
+        <div style={{ width: 48, height: 48, borderRadius: 14, background: '#eff6ff', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 18 }}>
+          <Zap style={{ width: 22, height: 22, color: '#1e3a8a', animation: 'svPulse 2s ease-in-out infinite' }} />
+        </div>
+        <div style={{ flex: 1 }}>
+          <div className="flex items-center justify-between" style={{ marginBottom: 6 }}>
+            <span style={{ fontSize: 13, fontWeight: 600, color: '#0f172a' }}>Generating Teaser</span>
+            <span style={{ fontSize: 11, fontWeight: 600, color: '#1e3a8a' }}>{Math.round(progress)}%</span>
+          </div>
+          <div className="sv-progress-track">
+            <div className="sv-progress-fill-navy" style={{ width: `${progress}%` }} />
+          </div>
+        </div>
+      </div>
+      <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12, padding: '12px 16px', borderRadius: 12, background: '#f8fafc', border: '1px solid #e2e8f0' }}>
+        <Sparkles style={{ width: 16, height: 16, color: '#1e3a8a', flexShrink: 0, marginTop: 2, animation: 'svPulse 2s ease-in-out infinite' }} />
+        <div>
+          <p style={{ fontSize: 10, fontWeight: 600, color: '#1e3a8a', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 2 }}>AI is working</p>
+          <p style={{ fontSize: 12, color: '#64748b', lineHeight: 1.5, animation: 'svFadeIn 0.5s ease-out' }} key={tipIndex}>{TEASER_TIPS[tipIndex]}</p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /* ── Landing page data ── */
 const FEATURES = [
   { icon: Search, title: 'Cross-document verification', desc: 'GST returns vs ITR vs Tally vs Bank Statements — automatic reconciliation across all uploaded documents with variance detection.' },
@@ -827,6 +939,10 @@ export default function Auditor() {
                           {cimIsRunning && <button onClick={() => cimAbortRef.current?.abort()} className="sv-btn-danger">Stop</button>}
                           <button onClick={() => cimReport && downloadCimPdf()} disabled={!cimReport} className="sv-btn-outline"><Download style={{ width: 16, height: 16, color: '#1e3a8a' }} />Download CIM</button>
                         </div>
+                        {cimIsRunning && <>
+                          <CimGenerationProgress isRunning={cimIsRunning} />
+                          <MiniGamesPanel />
+                        </>}
                         {cimReport && <ScrollArea className="h-[50vh]" style={{ borderRadius: 16, border: '1px solid #e2e8f0' }}><iframe title="CIM" srcDoc={withWatermark(getFormattedCIM(cimReport), samavedaWatermark)} style={{ width: '100%', minHeight: '50vh', border: 0, background: '#fff', borderRadius: 12 }} sandbox="allow-same-origin" /></ScrollArea>}
                       </div></TabsContent>
 
@@ -838,6 +954,10 @@ export default function Auditor() {
                           {teaserIsRunning && <button onClick={() => teaserAbortRef.current?.abort()} className="sv-btn-danger">Stop</button>}
                           <button onClick={() => teaserReport && downloadTeaserPdf()} disabled={!teaserReport} className="sv-btn-outline"><Download style={{ width: 16, height: 16, color: '#1e3a8a' }} />Download Teaser</button>
                         </div>
+                        {teaserIsRunning && <>
+                          <TeaserGenerationProgress isRunning={teaserIsRunning} />
+                          <MiniGamesPanel />
+                        </>}
                         {teaserReport && <ScrollArea className="h-[50vh]" style={{ borderRadius: 16, border: '1px solid #e2e8f0' }}><iframe title="Teaser" srcDoc={withWatermark(getFormattedTeaser(teaserReport), samavedaWatermark)} style={{ width: '100%', minHeight: '50vh', border: 0, background: '#fff', borderRadius: 12 }} sandbox="allow-same-origin" /></ScrollArea>}
                       </div></TabsContent>
                     </Tabs>
