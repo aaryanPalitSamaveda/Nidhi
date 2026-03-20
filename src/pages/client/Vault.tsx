@@ -25,6 +25,7 @@ import {
   Trash2,
   ChevronRight,
   Download,
+  DownloadCloud,
   MoreVertical,
   FolderPlus,
   ArrowUpRight,
@@ -99,6 +100,7 @@ export default function ClientVault() {
   const [uploadProgress, setUploadProgress] = useState<FileUploadProgressType[]>([]);
   const [selectedDocumentId, setSelectedDocumentId] = useState<string | null>(null);
   const [isDocumentModalOpen, setIsDocumentModalOpen] = useState(false);
+  const [isDownloadingAll, setIsDownloadingAll] = useState(false);
   const [ndaStatus, setNdaStatus] = useState<'checking' | 'signed' | 'unsigned' | 'not_required' | null>(null);
   const [userProfile, setUserProfile] = useState<any>(null);
   const [effectiveRole, setEffectiveRole] = useState<'seller' | 'investor' | 'admin' | 'client' | null>(null);
@@ -1151,6 +1153,110 @@ export default function ClientVault() {
     }
   };
 
+  const handleDownloadAll = async () => {
+    if (!selectedVault || !user) return;
+
+    setIsDownloadingAll(true);
+    try {
+      const JSZip = (await import('jszip')).default;
+      const zip = new JSZip();
+
+      // Fetch all folders in vault
+      const { data: allFolders } = await supabase
+        .from('folders')
+        .select('id, name, parent_id')
+        .eq('vault_id', selectedVault.id);
+
+      // Build folder path map: folder_id -> full path (e.g. "Parent/Child")
+      const folderMap = new Map<string, { name: string; parent_id: string | null }>();
+      (allFolders || []).forEach((f: { id: string; name: string; parent_id: string | null }) => {
+        folderMap.set(f.id, { name: f.name, parent_id: f.parent_id });
+      });
+
+      const getFolderPath = (folderId: string | null): string => {
+        if (!folderId) return '';
+        const folder = folderMap.get(folderId);
+        if (!folder) return '';
+        const parentPath = getFolderPath(folder.parent_id);
+        return parentPath ? `${parentPath}/${folder.name}` : folder.name;
+      };
+
+      // Fetch all documents in vault
+      const { data: allDocs, error: docsError } = await supabase
+        .from('documents')
+        .select('id, name, file_path, folder_id')
+        .eq('vault_id', selectedVault.id);
+
+      if (docsError) throw docsError;
+      if (!allDocs || allDocs.length === 0) {
+        toast({
+          title: 'No documents',
+          description: 'There are no documents to download in this dataroom.',
+          variant: 'destructive',
+        });
+        return;
+      }
+
+      let downloaded = 0;
+      const total = allDocs.length;
+
+      for (const doc of allDocs) {
+        const folderPath = getFolderPath(doc.folder_id);
+        const zipPath = folderPath ? `${folderPath}/${doc.name}` : doc.name;
+
+        try {
+          const { data: fileData, error } = await supabase.storage
+            .from('documents')
+            .download(doc.file_path);
+
+          if (error) {
+            console.warn(`Skipped ${doc.name}:`, error.message);
+            continue;
+          }
+          if (fileData) {
+            zip.file(zipPath, fileData);
+            downloaded++;
+          }
+        } catch (e) {
+          console.warn(`Skipped ${doc.name}:`, e);
+        }
+      }
+
+      if (downloaded === 0) {
+        toast({
+          title: 'Download failed',
+          description: 'Could not download any files. Please try again.',
+          variant: 'destructive',
+        });
+        return;
+      }
+
+      const blob = await zip.generateAsync({ type: 'blob' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${selectedVault.name.replace(/[^a-zA-Z0-9-_]/g, '_')}_${new Date().toISOString().slice(0, 10)}.zip`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+
+      toast({
+        title: 'Download complete',
+        description: `Downloaded ${downloaded} of ${total} file(s) as ZIP.`,
+      });
+    } catch (error: any) {
+      console.error('Error downloading all:', error);
+      toast({
+        title: 'Download failed',
+        description: error?.message || 'Failed to download files. Please try again.',
+        variant: 'destructive',
+      });
+    } finally {
+      setIsDownloadingAll(false);
+    }
+  };
+
   // Vault list view
   if (!selectedVault) {
     return (
@@ -1379,6 +1485,17 @@ export default function ClientVault() {
           </div>
           
           <div className="flex flex-wrap items-center gap-2 sm:gap-3">
+            <Button
+              variant="outline"
+              size="sm"
+              className="text-xs sm:text-sm"
+              onClick={handleDownloadAll}
+              disabled={isDownloadingAll}
+            >
+              <DownloadCloud className="w-3 h-3 sm:w-4 sm:h-4 mr-1 sm:mr-2" />
+              <span className="hidden sm:inline">{isDownloadingAll ? 'Preparing...' : 'Download All'}</span>
+              <span className="sm:hidden">{isDownloadingAll ? '...' : 'Download All'}</span>
+            </Button>
             {selectedVault.permissions.can_edit && (
               <Dialog open={isCreateFolderOpen} onOpenChange={setIsCreateFolderOpen}>
                 <DialogTrigger asChild>

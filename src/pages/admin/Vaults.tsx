@@ -117,17 +117,21 @@ export default function AdminVaults() {
             client = clientData;
           }
 
-          // Fetch all users with permissions for this vault
+          // Fetch all users with permissions for this vault (and include client_id)
           const { data: permissionsData } = await supabase
             .from('vault_permissions')
             .select('user_id')
             .eq('vault_id', vault.id);
 
-          // Extract unique users from permissions
+          // Include client_id so admins see NDA status for vault client too
+          const userIds = [...new Set([
+            ...(permissionsData?.map((p: any) => p.user_id) || []),
+            ...(vault.client_id ? [vault.client_id] : []),
+          ])];
+
+          // Extract unique users from permissions + client
           const usersMap = new Map<string, VaultUser>();
-          if (permissionsData && permissionsData.length > 0) {
-            // Get unique user IDs
-            const userIds = [...new Set(permissionsData.map((p: any) => p.user_id))];
+          if (userIds.length > 0) {
 
             // Fetch user profiles
             const { data: userProfiles } = await supabase
@@ -156,6 +160,13 @@ export default function AdminVaults() {
                 roleMap.set(ur.user_id, ur.role);
               });
 
+              // Effective role for NDA: client_id = seller (company sharing), vault_permissions = investor (or from user_roles)
+              const getEffectiveRole = (profileId: string) => {
+                const urRole = roleMap.get(profileId);
+                if (vault.client_id === profileId && urRole !== 'admin') return 'seller'; // vault client is seller for NDA
+                return urRole || 'investor';
+              };
+
               // Check if NDA templates exist for this vault (for seller or investor)
               const { data: ndaTemplates } = await supabase
                 .from('nda_templates')
@@ -165,10 +176,10 @@ export default function AdminVaults() {
               const hasSellerNDA = ndaTemplates?.some(t => t.role_type === 'seller') || false;
               const hasInvestorNDA = ndaTemplates?.some(t => t.role_type === 'investor') || false;
 
-              // Fetch NDA signatures for sellers and investors
+              // Fetch NDA signatures for sellers and investors (include client_id as seller)
               const sellerAndInvestorIds = userProfiles
                 .filter(p => {
-                  const role = roleMap.get(p.id);
+                  const role = getEffectiveRole(p.id);
                   return role === 'seller' || role === 'investor';
                 })
                 .map(p => p.id);
@@ -189,7 +200,7 @@ export default function AdminVaults() {
               }
 
               userProfiles.forEach((profile) => {
-                const userRole = roleMap.get(profile.id) || 'investor';
+                const userRole = getEffectiveRole(profile.id);
                 let ndaStatus: 'signed' | 'unsigned' | 'not_required' = 'not_required';
 
                 if (userRole === 'seller' && hasSellerNDA) {
