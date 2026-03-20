@@ -155,7 +155,7 @@ function DragDropZone({ onFiles, disabled }: { onFiles: (files: FileList) => voi
 
   return (
     <div onDragEnter={handleDragEnter} onDragLeave={handleDragLeave} onDragOver={handleDragOver} onDrop={handleDrop}
-      style={{ position: 'relative', borderRadius: 16, border: `2px dashed ${dragging ? '#3b82f6' : '#e2e8f0'}`, background: dragging ? '#eff6ff' : '#fafbfc', padding: '32px 20px', textAlign: 'center', transition: 'all 0.3s cubic-bezier(0.16,1,0.3,1)', transform: dragging ? 'scale(1.01)' : 'scale(1)', cursor: disabled ? 'not-allowed' : 'default' }}>
+      style={{ position: 'relative', borderRadius: 16, border: `2px dashed ${dragging ? '#3b82f6' : '#e2e8f0'}`, borderTop: '1px solid #ede9e3', padding: '32px 20px', textAlign: 'center', transition: 'all 0.3s cubic-bezier(0.16,1,0.3,1)', transform: dragging ? 'scale(1.01)' : 'scale(1)', cursor: disabled ? 'not-allowed' : 'default' }}>
       {dragging && <div style={{ position: 'absolute', inset: 0, borderRadius: 14, boxShadow: '0 0 0 3px rgba(59,130,246,0.15)', pointerEvents: 'none', animation: 'svPulseRing 1.5s ease-in-out infinite' }} />}
       <div style={{ width: 48, height: 48, borderRadius: 14, background: dragging ? '#dbeafe' : '#f1f5f9', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 12px', transition: 'all 0.3s', transform: dragging ? 'translateY(-4px) scale(1.1)' : 'translateY(0)' }}>
         <Upload style={{ width: 22, height: 22, color: dragging ? '#2563eb' : '#94a3b8', transition: 'color 0.3s' }} />
@@ -251,7 +251,7 @@ function FraudCatcherGame() {
         </div>
         {gameActive && <div className="sv-badge-red"><span style={{ fontSize: 11, fontWeight: 500 }}>💀 {misses}</span></div>}
       </div>
-      <div ref={canvasRef} style={{ position: 'relative', borderRadius: 16, background: '#f8fafc', border: '1px solid #e2e8f0', overflow: 'hidden', height: 280 }}>
+      <div ref={canvasRef} style={{ position: 'relative', borderRadius: 16, background: '#ffffff', border: '1px solid #e2e8f0', overflow: 'hidden', height: 280 }}>
         {!gameActive && (
           <div style={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 12, zIndex: 10 }}>
             <div className="sv-icon-circle-navy" style={{ width: 56, height: 56, fontSize: 24 }}>🚩</div>
@@ -532,7 +532,7 @@ const INJECTED_CSS = `
 
 /* Header */
 .sv-header{position:sticky;top:0;z-index:50;display:flex;align-items:center;justify-content:space-between;padding:10px 24px;transition:all 0.35s ease}
-.sv-header-scrolled{background:rgba(255,255,255,0.96)!important;backdrop-filter:blur(20px) saturate(1.2)!important;-webkit-backdrop-filter:blur(20px) saturate(1.2)!important;border-bottom:1px solid #e2e8f0!important;box-shadow:0 1px 12px rgba(0,0,0,0.04)!important}
+.sv-header-scrolled{background:rgba(250,248,245,0.96)!important;backdrop-filter:blur(20px) saturate(1.2)!important;-webkit-backdrop-filter:blur(20px) saturate(1.2)!important;border-bottom:1px solid #e2e8f0!important;box-shadow:0 1px 12px rgba(0,0,0,0.04)!important}
 
 /* Table */
 .sv-table{border-radius:16px;overflow:hidden;border:1px solid #e2e8f0}
@@ -648,7 +648,7 @@ export default function Auditor() {
   if (currentFolderId) { let cid: string | null = currentFolderId; const path: { id: string; name: string }[] = []; while (cid && cid !== rootFolderId) { const f = folders.find((x) => x.id === cid); if (!f) break; path.unshift({ id: f.id, name: f.name }); cid = f.parent_id; } breadcrumbs.push(...path); }
 
   return (
-    <div style={{ minHeight: '100vh', background: '#ffffff', color: '#0f172a' }}>
+    <div style={{ minHeight: '100vh', background: '#FAF8F5', color: '#0f172a' }}>
       {/* Header */}
       <header className={`sv-header ${headerScrolled ? 'sv-header-scrolled' : ''}`} style={{ background: headerScrolled ? undefined : 'transparent', borderBottom: headerScrolled ? undefined : '1px solid transparent' }}>
         <div className="flex items-center gap-3">
