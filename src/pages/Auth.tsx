@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { z } from 'zod';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
@@ -34,8 +34,12 @@ export default function Auth() {
   const [isLoading, setIsLoading] = useState(false);
   const [showForgotPassword, setShowForgotPassword] = useState(false);
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const { toast } = useToast();
   const { user, loading } = useAuth();
+
+  // Read redirect param — where to send user after login
+  const redirectTo = searchParams.get('redirect') || '/dashboard';
 
   const loginForm = useForm<LoginFormData>({
     resolver: zodResolver(loginSchema),
@@ -68,11 +72,12 @@ export default function Auth() {
     setShowForgotPassword(false);
   };
 
+  // If already logged in, redirect to intended destination
   useEffect(() => {
     if (!loading && user) {
-      navigate('/dashboard');
+      navigate(redirectTo);
     }
-  }, [user, loading, navigate]);
+  }, [user, loading, navigate, redirectTo]);
 
   const handleLogin = async (data: LoginFormData) => {
     setIsLoading(true);
@@ -83,7 +88,6 @@ export default function Auth() {
         setIsLoading(false);
         let errorMessage = error.message || 'Invalid email or password. Please try again.';
         
-        // Provide more helpful error messages
         if (error.message?.includes('Email not confirmed') || error.message?.includes('email_not_confirmed')) {
           errorMessage = 'Email not confirmed. Please check your email for a confirmation link, or contact your administrator.';
         } else if (error.message?.includes('Invalid login credentials') || error.message?.includes('invalid_credentials')) {
@@ -108,10 +112,10 @@ export default function Auth() {
         return;
       }
 
-      // Wait a moment for auth context to update
+      // Navigate to redirect destination (or /dashboard by default)
       setTimeout(() => {
         setIsLoading(false);
-        navigate('/dashboard');
+        navigate(redirectTo);
       }, 500);
     } catch (error: any) {
       setIsLoading(false);
@@ -142,35 +146,32 @@ export default function Auth() {
       return;
     }
 
-    // Wait a moment for auto-confirmation to complete, then sign in automatically
     if (signupData?.user) {
-      // Try to sign in the user automatically after a brief delay
       setTimeout(async () => {
         const { error: signInError } = await signIn(data.email, data.password);
         setIsLoading(false);
         
         if (signInError) {
-          // If auto sign-in fails, user can manually sign in
           toast({
             title: 'Account created',
             description: 'Your account has been created. Please sign in to continue.',
           });
-          setIsLogin(true); // Switch to login form
+          setIsLogin(true);
         } else {
           toast({
             title: 'Welcome to Nidhi',
             description: 'Your account has been created and you are now signed in.',
           });
-          navigate('/dashboard');
+          navigate(redirectTo);
         }
-      }, 2000); // Wait 2 seconds for confirmation to process
+      }, 2000);
     } else {
       setIsLoading(false);
       toast({
         title: 'Account created',
         description: 'Your account has been created. Please sign in to continue.',
       });
-      setIsLogin(true); // Switch to login form
+      setIsLogin(true);
     }
   };
 
