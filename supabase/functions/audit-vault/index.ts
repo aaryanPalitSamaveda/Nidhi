@@ -649,139 +649,132 @@ function finalSynthesisPrompt(input: {
     "",
     `You are a Forensic Chartered Accountant with 50 years of experience preparing a comprehensive forensic audit RED-FLAG report for the dataroom "${vaultName}".`,
     "",
-    "IMPORTANT: When referring to the company or entity being audited, always use the dataroom name provided above. Do NOT mention any company names, mandate names, or entity names found in the documents. Replace all such references with the dataroom name.",
+    "IMPORTANT: When referring to the company or entity being audited, always use the dataroom name. Do NOT mention actual company names found in documents — replace them with the dataroom name.",
     "",
     "CRITICAL PRINCIPLES:",
-    "1. DO NOT HALLUCINATE. Use ONLY the provided extracted facts and citations. If evidence is insufficient, explicitly state 'Needs more evidence'.",
-    "2. QUESTION EVERYTHING that is questionable, unusual, or inconsistent.",
-    "3. Be EXACT and PRECISE. Pinpoint specific amounts, dates, account numbers, document references.",
-    "4. Draw from your 50 years of experience in detecting fraud, financial irregularities, and accounting manipulations.",
+    "1. DO NOT HALLUCINATE. Only use facts present in provided evidence. If evidence is insufficient, state 'Needs more evidence'.",
+    "2. QUESTION EVERYTHING unusual, inconsistent, or suspicious.",
+    "3. Be EXACT: use specific amounts, dates, account numbers, document references.",
+    "4. Only include sections/subsections where actual evidence exists. Skip sections with no relevant documents.",
     "",
     "Data (per-file extracted facts, with citations):",
     JSON.stringify(fileFacts, null, 2),
     "",
-    "COMPREHENSIVE CROSS-VERIFICATION TASK:",
+    "OUTPUT FORMAT — Return a single valid JSON object with these 10 sections. Omit any section or subsection if no relevant documents exist.",
     "",
-    "Perform detailed cross-verification across ALL document types. Check for consistency, mismatches, and fraud indicators:",
-    "",
-    "1. BANK STATEMENTS vs OTHER DOCUMENTS:",
-    "   - Cross-check revenue figures in sales reports/invoices against bank deposits",
-    "   - Verify GST payments match bank debits",
-    "   - Check if declared income in ITR matches bank account credits",
-    "   - Identify unexplained large deposits or withdrawals",
-    "   - Verify loan disbursements match declared liabilities",
-    "   - Check for round-number transactions (potential red flags)",
-    "   - Verify vendor payments match purchase invoices",
-    "",
-    "2. GST FILINGS vs OTHER DOCUMENTS:",
-    "   - Cross-check GST output tax with sales invoices/revenue",
-    "   - Verify GST input tax credit claims against purchase invoices",
-    "   - Check GST returns match sales reports for the same period",
-    "   - Verify GST registration details match incorporation documents",
-    "   - Identify discrepancies in GST filing dates vs transaction dates",
-    "   - Check for missing GST filings for periods with sales activity",
-    "",
-    "3. SALES REPORTS vs OTHER DOCUMENTS:",
-    "   - Cross-check sales figures with invoices",
-    "   - Verify sales revenue matches bank deposits",
-    "   - Check sales reported in GST returns match sales reports",
-    "   - Verify sales figures match ITR income declarations",
-    "   - Identify gaps between sales reports and actual invoices",
-    "   - Check for duplicate or missing invoice numbers",
-    "",
-    "4. ITR (INCOME TAX RETURNS) vs OTHER DOCUMENTS:",
-    "   - Cross-check declared income with bank statements",
-    "   - Verify ITR income matches sales reports/revenue",
-    "   - Check if expenses claimed match purchase invoices",
-    "   - Verify tax payments match bank debits",
-    "   - Identify discrepancies between ITR and financial statements",
-    "   - Check for under-reporting or over-reporting of income",
-    "   - Verify depreciation claims match asset records",
-    "",
-    "5. STOCK/INVENTORY REPORTS vs OTHER DOCUMENTS:",
-    "   - Cross-check inventory values with purchase invoices",
-    "   - Verify stock movements match sales invoices",
-    "   - Check inventory valuation methods are consistent",
-    "   - Identify discrepancies in stock levels vs sales",
-    "   - Verify stock write-offs match accounting records",
-    "",
-    "6. CIBIL REPORTS (DIRECTORS) vs OTHER DOCUMENTS:",
-    "   - Cross-check director loan amounts with company books",
-    "   - Verify director credit history vs company financial health",
-    "   - Check for personal guarantees matching company liabilities",
-    "   - Identify conflicts between director CIBIL and company performance",
-    "",
-    "7. FINANCIAL STATEMENTS (Balance Sheet, P&L) vs OTHER DOCUMENTS:",
-    "   - Cross-check all figures with source documents",
-    "   - Verify totals match individual line items",
-    "   - Check for missing or incomplete periods",
-    "   - Identify unexplained adjustments or reclassifications",
-    "",
-    "8. FRAUD DETECTION PATTERNS:",
-    "   - Look for circular transactions (money moving in circles)",
-    "   - Identify related-party transactions at non-arm's length",
-    "   - Check for revenue recognition manipulation",
-    "   - Detect expense manipulation or fictitious expenses",
-    "   - Identify asset overvaluation or understatement of liabilities",
-    "   - Check for timing manipulation (revenue/expense shifting)",
-    "   - Detect duplicate invoices or missing invoices",
-    "   - Identify suspicious round-number transactions",
-    "   - Check for transactions just below reporting thresholds",
-    "   - Verify authenticity of supporting documents",
-    "",
-    "9. MISSING LINKAGES & INCONSISTENCIES:",
-    "   - Identify documents that should exist but are missing",
-    "   - Check for gaps in date sequences",
-    "   - Verify document numbering sequences",
-    "   - Identify missing supporting documents for transactions",
-    "   - Check for inconsistencies in company names, addresses, registration numbers",
-    "",
-    "DETAILED REPORTING REQUIREMENTS:",
-    "",
-    "For EACH red flag identified, provide:",
-    "",
-    "1. TITLE: Clear, specific title describing the issue",
-    "2. SEVERITY: 'high' (fraud/large discrepancy), 'medium' (significant issue), 'low' (minor inconsistency), 'needs_more_evidence' (requires additional documents)",
-    "3. WHAT_IT_MEANS: Detailed explanation of what this red flag indicates and its implications",
-    "4. PROBABLE_REASON: As a Forensic CA with 50 years of experience, pinpoint the EXACT root cause. Be specific and technical:",
-    "   - What specific accounting principle or regulation is violated?",
-    "   - What type of fraud or error pattern does this match?",
-    "   - What are the possible explanations (fraud, error, timing difference, etc.)?",
-    "   - What does your experience tell you about similar cases?",
-    "   - Be precise: mention specific amounts, dates, account types, document types",
-    "5. CONFIDENCE_SCORE (0-100): Assess confidence based on:",
-    "   - Quality and clarity of evidence",
-    "   - Completeness of cross-verification",
-    "   - Consistency of pattern across documents",
-    "   - Higher scores (80-100) = Strong evidence, clear pattern",
-    "   - Medium scores (50-79) = Some evidence but needs verification",
-    "   - Lower scores (20-49) = Weak evidence, requires more documents",
-    "   - Very low (0-19) = Speculative, insufficient evidence",
-    "6. WHERE_TO_CHECK: List all relevant files and their paths",
-    "7. EVIDENCE: Provide exact quotes from documents with snippet IDs",
-    "8. RECOMMENDED_NEXT_STEPS: Specific, actionable steps to investigate or resolve",
-    "",
-    "OUTPUT FORMAT:",
-    "Output JSON with this exact shape:",
     "{",
-    '  "executive_summary": string,  // Comprehensive summary of all findings, fraud indicators, and overall assessment',
-    '  "red_flags": [ {',
-    '     "severity": "high"|"medium"|"low"|"needs_more_evidence",',
-    '     "title": string,  // Specific, descriptive title',
-    '     "what_it_means": string,  // Detailed explanation of implications',
-    '     "probable_reason": string,  // EXACT root cause analysis with technical details, specific amounts/dates, fraud patterns identified',
-    '     "confidence_score": number,  // 0-100 percentage',
-    '     "where_to_check": [ { "file_name": string, "file_path": string } ],',
-    '     "evidence": [ { "file_name": string, "file_path": string, "snippet_id": string, "quote": string } ],',
-    '     "recommended_next_steps": string[]  // Specific, actionable steps',
-    "  } ],",
-    '  "coverage_notes": string[]  // Notes about document coverage, missing documents, limitations',
-    '  "company_names_found": string[]  // CRITICAL: List ALL company names, mandate names, entity names, trade names, or legal names that appear in the documents. These will be replaced with the dataroom name. Include variations (e.g. "Acme Corp", "Acme Corporation", "ACME").',
+    '  "executive_summary": "Comprehensive paragraph summarizing all findings and overall risk",',
+    '  "claimed_revenue": "e.g. ₹4.0 Cr (per Investment Teaser) or null if not found",',
+    '  "actual_revenue": "e.g. ₹3.89 Cr (per Audited Balance Sheet) or null if not found",',
+    '  "claimed_valuation": "e.g. ₹10 Cr or null if not found",',
+    '  "forensic_risk_score": 72,',
+    '  "risk_breakdown": [',
+    '    { "category": "Revenue Quality", "score": 8, "note": "High DSO, unverified claims" },',
+    '    { "category": "Cash Flow Integrity", "score": 7, "note": "Director advances, personal expenses" },',
+    '    { "category": "Document Authenticity", "score": 6, "note": "Future dates, redacted COI" },',
+    '    { "category": "Related Party Risk", "score": 8, "note": "Unexplained director transactions" },',
+    '    { "category": "Financial Presentation", "score": 7, "note": "Teaser vs actual discrepancies" },',
+    '    { "category": "Compliance Risk", "score": 5, "note": "Out-of-state auditor, incomplete filings" }',
+    '  ],',
+    '  "section2_revenue_reconciliation": {',
+    '    "intro": "Brief intro paragraph about revenue data cross-referencing",',
+    '    "data_table": [',
+    '      { "source_document": "Balance Sheet (Doc 2)", "fy23": "₹2.60 Cr", "fy24": "₹3.89 Cr", "fy25": null, "observations": "Audited; most reliable source" }',
+    '    ],',
+    '    "red_flags": [',
+    '      { "title": "Revenue Growth Rate Fabrication", "severity": "critical", "detail": "Full explanation...", "evidence": "Specific quote or data point" }',
+    '    ]',
+    '  },',
+    '  "section3_financial_red_flags": {',
+    '    "subsections": [',
+    '      {',
+    '        "title": "Trade Receivables Anomaly",',
+    '        "metrics_table": [',
+    '          { "metric": "Trade Receivables", "fy23": "₹1.15 Cr", "fy24": "₹1.35 Cr", "yoy_change": "+17.2%", "industry_norm": "—" }',
+    '        ],',
+    '        "red_flags": [',
+    '          { "title": "DSO at 2–3x Industry Standard", "severity": "critical", "detail": "...", "implications": ["point 1", "point 2"] }',
+    '        ]',
+    '      }',
+    '    ]',
+    '  },',
+    '  "section4_cash_flow_analysis": {',
+    '    "subsections": [',
+    '      {',
+    '        "title": "Director Advance Withdrawals",',
+    '        "transactions_table": [',
+    '          { "date": "20/Dec/2024", "payee": "SHASHI", "amount": "₹1,50,000", "description": "AdvR", "flag": "Round sum withdrawal" }',
+    '        ],',
+    '        "red_flags": [',
+    '          { "title": "Suspected Fund Siphoning via Director Advances", "severity": "critical", "detail": "...", "forensic_indicators": ["indicator 1", "indicator 2"] }',
+    '        ]',
+    '      }',
+    '    ]',
+    '  },',
+    '  "section5_document_authenticity": {',
+    '    "completeness_matrix": [',
+    '      { "document": "Certificate of Incorporation", "status": "Redacted", "issue": "No verifiable data", "risk_impact": "Cannot verify legal existence" }',
+    '    ],',
+    '    "red_flags": [',
+    '      { "title": "COI Status: INCOMPLETE / REDACTED", "severity": "critical", "detail": "..." }',
+    '    ]',
+    '  },',
+    '  "section6_temporal_inconsistencies": {',
+    '    "timeline_table": [',
+    '      { "document": "Bank Statement", "date_referenced": "19/12/2025", "issue": "FUTURE DATE", "severity": "CRITICAL" }',
+    '    ],',
+    '    "red_flags": [',
+    '      { "title": "Future-Dated Documents", "severity": "critical", "detail": "..." }',
+    '    ]',
+    '  },',
+    '  "section7_documentation_gaps": {',
+    '    "gaps_table": [',
+    '      { "missing_document": "Complete COI with CIN", "criticality": "CRITICAL", "why_it_matters": "Cannot verify the company legally exists" }',
+    '    ]',
+    '  },',
+    '  "section8_mnc_client_verification": {',
+    '    "verifiable_receipts_table": [',
+    '      { "client": "Procter & Gamble", "amount": "₹48,600", "date": "20/Dec/2024", "matches_teaser": "Partial match" }',
+    '    ],',
+    '    "findings": ["Finding 1", "Finding 2"]',
+    '  },',
+    '  "section9_risk_matrix": {',
+    '    "beneish_indicators": [',
+    '      { "indicator": "Unusual receivables growth", "present": "YES", "evidence": "DSO of 127+ days" }',
+    '    ],',
+    '    "assessment_summary": "Assessment paragraph",',
+    '    "indicators_present_count": 6,',
+    '    "total_indicators": 7',
+    '  },',
+    '  "section10_recommendations": {',
+    '    "immediate_critical": ["Action 1", "Action 2"],',
+    '    "short_term_high": ["Action 1"],',
+    '    "deal_structure_notes": "Paragraph about valuation concerns and deal structure",',
+    '    "final_verdict": "DO NOT PROCEED | PROCEED WITH CAUTION | PROCEED",',
+    '    "final_verdict_detail": "Full explanation of final recommendation"',
+    '  },',
+    '  "red_flags": [',
+    '    {',
+    '      "severity": "high",',
+    '      "title": "string",',
+    '      "what_it_means": "string",',
+    '      "probable_reason": "string",',
+    '      "confidence_score": 85,',
+    '      "where_to_check": [{ "file_name": "string", "file_path": "string" }],',
+    '      "evidence": [{ "file_name": "string", "file_path": "string", "snippet_id": "string", "quote": "string" }],',
+    '      "recommended_next_steps": ["string"]',
+    '    }',
+    '  ],',
+    '  "coverage_notes": ["string"],',
+    '  "company_names_found": ["string"]',
     "}",
     "",
-    "Remember: Be thorough, question everything questionable, pinpoint exact issues, and provide expert-level analysis based on your 50 years of forensic accounting experience.",
-    "",
-    "CRITICAL: In the executive summary, red flags, and all report sections, replace any company names, mandate names, or entity names found in the documents with the dataroom name provided above. Never reveal the actual company name - always use the dataroom name instead. Populate company_names_found with every such name you find.",
+    "Rules:",
+    "- Only include table rows and red flags where you have actual evidence from the documents.",
+    "- If a whole section has no relevant documents, set it to null (e.g. \"section8_mnc_client_verification\": null).",
+    "- red_flags array must contain ALL red flags from all sections combined for the main report view.",
+    "- Replace all company/entity names in output with the dataroom name.",
+    "- Return ONLY valid JSON. No markdown, no code blocks, no extra text.",
   ].join("\n");
 }
 
@@ -824,12 +817,172 @@ function reportMarkdownFromJson(report: any, vaultName: string): string {
   lines.push("");
   lines.push(`### Executive Summary`);
   lines.push(report?.executive_summary ?? "");
+  if (report?.forensic_risk_score) {
+    lines.push("");
+    lines.push(`**Forensic Risk Score:** ${report.forensic_risk_score}/100`);
+  }
   lines.push("");
-  lines.push(`### Red Flags`);
+
+  // Section 2 - Revenue Reconciliation
+  const s2 = report?.section2_revenue_reconciliation;
+  if (s2) {
+    lines.push(`### 2. Revenue Reconciliation Analysis`);
+    if (s2.intro) { lines.push(s2.intro); lines.push(""); }
+    const dt = Array.isArray(s2.data_table) ? s2.data_table : [];
+    if (dt.length > 0) {
+      lines.push("| Source Document | FY23 | FY24 | FY25 | Observations |");
+      lines.push("|---|---|---|---|---|");
+      dt.forEach((r: any) => lines.push(`| ${r.source_document ?? ""} | ${r.fy23 ?? "—"} | ${r.fy24 ?? "—"} | ${r.fy25 ?? "—"} | ${r.observations ?? ""} |`));
+      lines.push("");
+    }
+    const rfs = Array.isArray(s2.red_flags) ? s2.red_flags : [];
+    rfs.forEach((rf: any) => {
+      lines.push(`#### [${(rf.severity ?? "").toUpperCase()}] ${rf.title ?? ""}`);
+      lines.push(rf.detail ?? ""); lines.push("");
+    });
+  }
+
+  // Section 3 - Financial Red Flags
+  const s3 = report?.section3_financial_red_flags;
+  if (s3) {
+    lines.push(`### 3. Financial Red Flags — Detailed Findings`);
+    const subs = Array.isArray(s3.subsections) ? s3.subsections : [];
+    subs.forEach((sub: any) => {
+      lines.push(`#### ${sub.title ?? ""}`);
+      const mt = Array.isArray(sub.metrics_table) ? sub.metrics_table : [];
+      if (mt.length > 0) {
+        const cols = Object.keys(mt[0]);
+        lines.push("| " + cols.join(" | ") + " |");
+        lines.push("|" + cols.map(() => "---").join("|") + "|");
+        mt.forEach((r: any) => lines.push("| " + cols.map((c) => r[c] ?? "—").join(" | ") + " |"));
+        lines.push("");
+      }
+      const rfs = Array.isArray(sub.red_flags) ? sub.red_flags : [];
+      rfs.forEach((rf: any) => {
+        lines.push(`##### [${(rf.severity ?? "").toUpperCase()}] ${rf.title ?? ""}`);
+        lines.push(rf.detail ?? "");
+        const imp = Array.isArray(rf.implications) ? rf.implications : [];
+        imp.forEach((i: string) => lines.push(`- ${i}`));
+        lines.push("");
+      });
+    });
+  }
+
+  // Section 4 - Cash Flow
+  const s4 = report?.section4_cash_flow_analysis;
+  if (s4) {
+    lines.push(`### 4. Cash Flow & Fund Siphoning Analysis`);
+    const subs = Array.isArray(s4.subsections) ? s4.subsections : [];
+    subs.forEach((sub: any) => {
+      lines.push(`#### ${sub.title ?? ""}`);
+      const tt = Array.isArray(sub.transactions_table) ? sub.transactions_table : [];
+      if (tt.length > 0) {
+        const cols = Object.keys(tt[0]);
+        lines.push("| " + cols.join(" | ") + " |");
+        lines.push("|" + cols.map(() => "---").join("|") + "|");
+        tt.forEach((r: any) => lines.push("| " + cols.map((c) => r[c] ?? "—").join(" | ") + " |"));
+        lines.push("");
+      }
+      const rfs = Array.isArray(sub.red_flags) ? sub.red_flags : [];
+      rfs.forEach((rf: any) => {
+        lines.push(`##### [${(rf.severity ?? "").toUpperCase()}] ${rf.title ?? ""}`);
+        lines.push(rf.detail ?? "");
+        const fi = Array.isArray(rf.forensic_indicators) ? rf.forensic_indicators : [];
+        fi.forEach((i: string) => lines.push(`- ${i}`));
+        lines.push("");
+      });
+    });
+  }
+
+  // Section 5 - Document Authenticity
+  const s5 = report?.section5_document_authenticity;
+  if (s5) {
+    lines.push(`### 5. Document Authenticity & Integrity Review`);
+    const cm = Array.isArray(s5.completeness_matrix) ? s5.completeness_matrix : [];
+    if (cm.length > 0) {
+      lines.push("| Document | Status | Issue | Risk Impact |");
+      lines.push("|---|---|---|---|");
+      cm.forEach((r: any) => lines.push(`| ${r.document ?? ""} | ${r.status ?? ""} | ${r.issue ?? ""} | ${r.risk_impact ?? ""} |`));
+      lines.push("");
+    }
+    const rfs = Array.isArray(s5.red_flags) ? s5.red_flags : [];
+    rfs.forEach((rf: any) => { lines.push(`#### [${(rf.severity ?? "").toUpperCase()}] ${rf.title ?? ""}`); lines.push(rf.detail ?? ""); lines.push(""); });
+  }
+
+  // Section 6 - Temporal
+  const s6 = report?.section6_temporal_inconsistencies;
+  if (s6) {
+    lines.push(`### 6. Temporal & Timeline Inconsistencies`);
+    const tt = Array.isArray(s6.timeline_table) ? s6.timeline_table : [];
+    if (tt.length > 0) {
+      lines.push("| Document | Date Referenced | Issue | Severity |");
+      lines.push("|---|---|---|---|");
+      tt.forEach((r: any) => lines.push(`| ${r.document ?? ""} | ${r.date_referenced ?? ""} | ${r.issue ?? ""} | ${r.severity ?? ""} |`));
+      lines.push("");
+    }
+    const rfs = Array.isArray(s6.red_flags) ? s6.red_flags : [];
+    rfs.forEach((rf: any) => { lines.push(`#### [${(rf.severity ?? "").toUpperCase()}] ${rf.title ?? ""}`); lines.push(rf.detail ?? ""); lines.push(""); });
+  }
+
+  // Section 7 - Documentation Gaps
+  const s7 = report?.section7_documentation_gaps;
+  if (s7) {
+    lines.push(`### 7. Critical Documentation Gaps`);
+    const gt = Array.isArray(s7.gaps_table) ? s7.gaps_table : [];
+    if (gt.length > 0) {
+      lines.push("| Missing Document | Criticality | Why It Matters |");
+      lines.push("|---|---|---|");
+      gt.forEach((r: any) => lines.push(`| ${r.missing_document ?? ""} | ${r.criticality ?? ""} | ${r.why_it_matters ?? ""} |`));
+      lines.push("");
+    }
+  }
+
+  // Section 8 - MNC
+  const s8 = report?.section8_mnc_client_verification;
+  if (s8) {
+    lines.push(`### 8. MNC Client Claim Verification`);
+    const vt = Array.isArray(s8.verifiable_receipts_table) ? s8.verifiable_receipts_table : [];
+    if (vt.length > 0) {
+      lines.push("| Client | Amount | Date | Matches Teaser? |");
+      lines.push("|---|---|---|---|");
+      vt.forEach((r: any) => lines.push(`| ${r.client ?? ""} | ${r.amount ?? ""} | ${r.date ?? ""} | ${r.matches_teaser ?? ""} |`));
+      lines.push("");
+    }
+    const findings = Array.isArray(s8.findings) ? s8.findings : [];
+    findings.forEach((f: string) => lines.push(`- ${f}`));
+    lines.push("");
+  }
+
+  // Section 9 - Risk Matrix
+  const s9 = report?.section9_risk_matrix;
+  if (s9) {
+    lines.push(`### 9. Risk Matrix & Beneish M-Score Indicators`);
+    const bi = Array.isArray(s9.beneish_indicators) ? s9.beneish_indicators : [];
+    if (bi.length > 0) {
+      lines.push("| Forensic Indicator | Present? | Evidence |");
+      lines.push("|---|---|---|");
+      bi.forEach((r: any) => lines.push(`| ${r.indicator ?? ""} | ${r.present ?? ""} | ${r.evidence ?? ""} |`));
+      lines.push("");
+    }
+    if (s9.assessment_summary) { lines.push(s9.assessment_summary); lines.push(""); }
+  }
+
+  // Section 10 - Recommendations
+  const s10 = report?.section10_recommendations;
+  if (s10) {
+    lines.push(`### 10. Recommendations & Final Verdict`);
+    const imm = Array.isArray(s10.immediate_critical) ? s10.immediate_critical : [];
+    if (imm.length > 0) { lines.push("**Immediate Actions (Critical):**"); imm.forEach((a: string) => lines.push(`- ${a}`)); lines.push(""); }
+    const st = Array.isArray(s10.short_term_high) ? s10.short_term_high : [];
+    if (st.length > 0) { lines.push("**Short-Term (High Priority):**"); st.forEach((a: string) => lines.push(`- ${a}`)); lines.push(""); }
+    if (s10.deal_structure_notes) { lines.push(`**Deal Structure:** ${s10.deal_structure_notes}`); lines.push(""); }
+    if (s10.final_verdict) { lines.push(`**FINAL RECOMMENDATION: ${s10.final_verdict}**`); lines.push(s10.final_verdict_detail ?? ""); lines.push(""); }
+  }
+
+  // Fallback: main red_flags list (if no sections or as supplement)
   const redFlags = Array.isArray(report?.red_flags) ? report.red_flags : [];
-  if (redFlags.length === 0) {
-    lines.push("- No red flags produced (or insufficient evidence).");
-  } else {
+  if (redFlags.length > 0 && !s2 && !s3) {
+    lines.push(`### Red Flags`);
     redFlags.forEach((rf: any, idx: number) => {
       lines.push(`#### ${idx + 1}. [${rf?.severity ?? "unknown"}] ${rf?.title ?? "Untitled"}`);
       lines.push("");
@@ -838,34 +991,24 @@ function reportMarkdownFromJson(report: any, vaultName: string): string {
       lines.push("**Probable Reason**");
       lines.push(rf?.probable_reason ?? "Not specified");
       lines.push("");
-      const confidenceScore = typeof rf?.confidence_score === 'number' ? rf.confidence_score : null;
-      if (confidenceScore !== null) {
-        lines.push(`**Confidence Score:** ${Math.round(confidenceScore)}%`);
-        lines.push("");
-      }
+      const cs = typeof rf?.confidence_score === "number" ? rf.confidence_score : null;
+      if (cs !== null) { lines.push(`**Confidence Score:** ${Math.round(cs)}%`); lines.push(""); }
       lines.push("**Where to check**");
-      const whereToCheck = Array.isArray(rf?.where_to_check) ? rf.where_to_check : [];
-      whereToCheck.forEach((w: any) => {
-        lines.push(`- ${w?.file_name ?? ""} \`${w?.file_path ?? ""}\``);
-      });
+      (Array.isArray(rf?.where_to_check) ? rf.where_to_check : []).forEach((w: any) => lines.push(`- ${w?.file_name ?? ""} \`${w?.file_path ?? ""}\``));
       lines.push("");
       lines.push("**Evidence (quoted)**");
-      const evidence = Array.isArray(rf?.evidence) ? rf.evidence : [];
-      evidence.forEach((e: any) => {
-        lines.push(`- ${e?.file_name ?? ""} \`${e?.file_path ?? ""}\` (snippet ${e?.snippet_id ?? "?"}): "${(e?.quote ?? "").replaceAll("\n", " ").slice(0, 400)}"`);
-      });
+      (Array.isArray(rf?.evidence) ? rf.evidence : []).forEach((e: any) => lines.push(`- ${e?.file_name ?? ""} (snippet ${e?.snippet_id ?? "?"}): "${(e?.quote ?? "").replaceAll("\n", " ").slice(0, 400)}"`));
       lines.push("");
       lines.push("**Recommended next steps**");
-      const nextSteps = Array.isArray(rf?.recommended_next_steps) ? rf.recommended_next_steps : [];
-      nextSteps.forEach((s: any) => lines.push(`- ${s}`));
+      (Array.isArray(rf?.recommended_next_steps) ? rf.recommended_next_steps : []).forEach((s: any) => lines.push(`- ${s}`));
       lines.push("");
     });
   }
-  lines.push("");
+
   lines.push("### Coverage Notes");
-  const coverageNotes = Array.isArray(report?.coverage_notes) ? report.coverage_notes : [];
-  coverageNotes.forEach((n: any) => lines.push(`- ${n}`));
+  (Array.isArray(report?.coverage_notes) ? report.coverage_notes : []).forEach((n: any) => lines.push(`- ${n}`));
   lines.push("");
+
   const rawMd = lines.join("\n");
   const companyNames = Array.isArray(report?.company_names_found) ? report.company_names_found : [];
   return sanitizeCompanyNames(rawMd, vaultName, companyNames);
@@ -877,7 +1020,7 @@ try {
     // Immediate logging - this should always execute
     let method: string;
     let url: string;
-    
+
     try {
       method = req.method;
       url = req.url;
@@ -885,11 +1028,11 @@ try {
       console.error("Failed to read request properties:", e);
       return jsonResponse({ error: "Failed to read request" }, 500);
     }
-    
+
     console.log("=== FUNCTION START ===");
     console.log("Method:", method);
     console.log("URL:", url);
-  
+
   // Wrap everything in try-catch to catch any errors
   try {
     // Handle CORS preflight
@@ -903,13 +1046,13 @@ try {
     console.log("Processing", method, "request...");
     console.log("Request URL:", url);
     console.log("Request method:", method);
-    
+
     // Test endpoint - if we see this log, the function IS being called
     if (url.includes("?test=true")) {
       console.log("=== TEST ENDPOINT HIT ===");
       return jsonResponse({ success: true, message: "Function is reachable", method, url }, 200);
     }
-    
+
     // Log headers for debugging
     const authHeader = req.headers.get("authorization") || req.headers.get("Authorization");
     console.log("Auth header present:", !!authHeader);
@@ -918,19 +1061,19 @@ try {
     const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
     // SUPABASE_ANON_KEY is automatically injected by Supabase into Edge Functions
     const anonKey = Deno.env.get("SUPABASE_ANON_KEY");
-    
+
     console.log("Env check - URL:", supabaseUrl ? "present" : "missing");
     console.log("Env check - Service Role Key:", serviceRoleKey ? "present" : "missing");
     console.log("Env check - Anon Key:", anonKey ? "present" : "missing");
-    
+
     if (!supabaseUrl || !serviceRoleKey) {
       console.error("Missing required env vars");
       return jsonResponse({ error: "Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY" }, 500);
     }
     if (!anonKey) {
       console.error("Missing SUPABASE_ANON_KEY");
-      return jsonResponse({ 
-        error: "Missing SUPABASE_ANON_KEY. This should be automatically available in Edge Functions. Check your Supabase project settings." 
+      return jsonResponse({
+        error: "Missing SUPABASE_ANON_KEY. This should be automatically available in Edge Functions. Check your Supabase project settings."
       }, 500);
     }
 
@@ -947,7 +1090,7 @@ try {
     console.log("=== EXTRACTING TOKEN ===");
     const token = getBearerToken(req);
     console.log("Token extracted:", token ? `present (${token.length} chars)` : "missing");
-    
+
     if (!token) {
       console.error("=== TOKEN MISSING - RETURNING 401 ===");
       return jsonResponse({ error: "Missing Authorization Bearer token" }, 401);
@@ -1104,7 +1247,7 @@ try {
     if (body.action === "cancel") {
       const { jobId } = body as CancelBody;
       if (!jobId) return jsonResponse({ error: "Missing jobId" }, 400);
-      
+
       const { data: job, error: jobErr } = await supabaseAdmin
         .from("audit_jobs")
         .select("*")
@@ -1179,11 +1322,11 @@ try {
           .select("id", { count: "exact", head: true })
           .eq("job_id", jobId)
           .in("status", ["done", "failed", "skipped"]);
-        
+
         const total = totalCount ?? job.total_files ?? 0;
         const processed = doneCount ?? 0;
         const baseProgress = total > 0 ? Math.floor((processed / total) * 90) : 100;
-        
+
         // Calculate estimated remaining time; cap at 4 hours to avoid wild ETA glitches
         const MAX_ETA_SECONDS = 4 * 60 * 60; // 4 hours
         let estimatedRemainingSeconds: number | null = null;
@@ -1195,11 +1338,11 @@ try {
             estimatedRemainingSeconds = Math.min(MAX_ETA_SECONDS, Math.max(0, raw));
           }
         }
-        
-        const currentStep = currentFileName 
+
+        const currentStep = currentFileName
           ? `Processing: ${currentFileName.substring(0, 50)}${currentFileName.length > 50 ? '...' : ''} (${processed}/${total})`
           : `Processing documents (${processed}/${total})`;
-        
+
         await supabaseAdmin
           .from("audit_jobs")
           .update({
@@ -1223,7 +1366,7 @@ try {
           .from("audit_job_files")
           .update({ status: "processing", started_at: new Date().toISOString(), error: null })
           .eq("id", fileId);
-        
+
         // Update progress to show current file being processed
         await updateProgress(fileName);
 
@@ -1340,7 +1483,7 @@ try {
                 evidence_json: { snippets: [] },
               })
               .eq("id", fileId);
-            
+
             // Update progress after skipping
             await updateProgress();
             return;
@@ -1398,7 +1541,7 @@ try {
                   const finalErrorMsg = errorMsg.includes("rate limit") || errorMsg.includes("429")
                     ? `${provider} rate limit exceeded after ${maxRetries + 1} attempts. Will retry on next batch.`
                     : `${provider} API error after ${maxRetries + 1} attempts: ${errorMsg.substring(0, 500)}`;
-                  
+
                   await supabaseAdmin
                     .from("audit_job_files")
                     .update({
@@ -1407,7 +1550,7 @@ try {
                       error: finalErrorMsg,
                     })
                     .eq("id", fileId);
-                  
+
                   // Break out of retry loop and continue to next file
                   factsJson = null;
                   break;
@@ -1415,14 +1558,14 @@ try {
                 // Otherwise, continue retry loop
               }
             }
-            
+
             // If we still don't have factsJson after retries, skip this file
             if (!factsJson) {
               console.error("Failed to get factsJson after all retries, skipping file");
               await updateProgress();
               return;
             }
-            
+
             factsJson = validateCitedJson(
               factsJson,
               evidenceSnippets.map((s) => ({ id: s.id, text: s.text })),
@@ -1446,7 +1589,7 @@ try {
               error: null,
             })
             .eq("id", fileId);
-          
+
           // Update progress after each file completes
           await updateProgress();
         };
@@ -1473,7 +1616,7 @@ try {
             .from("audit_job_files")
             .update(updatePayload)
             .eq("id", fileId);
-          
+
           await updateProgress();
           if (isTimeout) console.warn(`Skipped ${fileName}: processing timed out`);
         }
@@ -1492,7 +1635,7 @@ try {
         .select("id", { count: "exact", head: true })
         .eq("job_id", jobId)
         .in("status", ["done", "failed", "skipped"]);
-      
+
       const finalTotal = finalTotalCount ?? job.total_files ?? 0;
       const finalProcessed = finalProcessedCount ?? 0;
 
@@ -1599,14 +1742,14 @@ try {
                     model: openaiModelText,
                     system: forensicSystemPrompt(),
                     user: synthesisUser,
-                    maxTokens: 4096,
+                    maxTokens: 12000,
                   })
                 : await claudeChatJson({
                     apiKey: claudeKey,
                     model: claudeModelText,
                     system: forensicSystemPrompt(),
                     user: synthesisUser,
-                    maxTokens: 4096,
+                    maxTokens: 12000,
                   });
             } catch (err: any) {
               synthesisError = err?.message || String(err);
@@ -1696,7 +1839,7 @@ try {
     console.error("Error message:", errorMsg);
     console.error("Error stack:", errorStack);
     console.error("Error object:", JSON.stringify(e, Object.getOwnPropertyNames(e)));
-    return jsonResponse({ 
+    return jsonResponse({
       error: errorMsg,
       details: process.env.DENO_ENV === "development" ? errorStack : undefined
     }, 500);
@@ -1710,4 +1853,3 @@ try {
     return jsonResponse({ error: `Function initialization failed: ${topLevelError?.message}` }, 500);
   });
 }
-
