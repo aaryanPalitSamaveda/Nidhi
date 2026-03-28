@@ -84,7 +84,7 @@ const FEATURES = [
 const STATS = [
   { value: '6', label: 'Doc types' },
   { value: '5+', label: 'Cross-checks' },
-  { value: '<15m', label: 'Audit time' },
+  { value: '<5m', label: 'Audit time' },
 ];
 
 /* ═══════════════════════════ COMPONENT ═══════════════════════════ */
