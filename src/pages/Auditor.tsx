@@ -534,18 +534,17 @@ export default function Auditor() {
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null); const reportContentRef = useRef<HTMLDivElement>(null);
   const cimAbortRef = useRef<AbortController | null>(null); const teaserAbortRef = useRef<AbortController | null>(null);
   const formRef = useRef<HTMLDivElement>(null); const { toast } = useToast(); const formTilt = use3DTilt(4);
-  const { user, profile } = useAuth();
+  const { user, profile, loading: authLoading } = useAuth();
 
   const handleSignOut = useCallback(async () => {
     await signOut();
-    sessionStorage.removeItem('nidhi:auditor:session');
     window.location.href = '/auditor/auth';
   }, []);
 
   useEffect(() => { const id = 'audit-enhanced-css'; if (!document.getElementById(id)) { const s = document.createElement('style'); s.id = id; s.textContent = INJECTED_CSS; document.head.appendChild(s); } }, []);
   useEffect(() => { const h = () => setHeaderScrolled(window.scrollY > 50); window.addEventListener('scroll', h, { passive: true }); return () => window.removeEventListener('scroll', h); }, []);
 
-  const resetSession = useCallback(() => { sessionStorage.removeItem('nidhi:auditor:session'); setSession(null); setStep('form'); setDocuments([]); setFolders([]); setCurrentFolderId(null); setAuditJob(null); setAuditError(null); setCimReport(null); setCimError(null); setTeaserReport(null); setTeaserError(null); }, []);
+  const resetSession = useCallback(() => { localStorage.removeItem('nidhi:auditor:cimReport'); localStorage.removeItem('nidhi:auditor:teaserReport'); setSession(null); setStep('form'); setDocuments([]); setFolders([]); setCurrentFolderId(null); setAuditJob(null); setAuditError(null); setCimReport(null); setCimError(null); setTeaserReport(null); setTeaserError(null); }, []);
 
   const fetchStatus = useCallback(async () => {
     if (!session?.sessionId) return; setStatusLoading(true);
@@ -554,14 +553,17 @@ export default function Auditor() {
     finally { setStatusLoading(false); }
   }, [session?.sessionId, resetSession]);
 
-  useEffect(() => { const stored = sessionStorage.getItem('nidhi:auditor:session'); if (stored) { try { const s = JSON.parse(stored); setSession(s); setStep('upload'); } catch (_) {} } }, []);
+  // Restore CIM/Teaser report cache from localStorage (client-generated, device-local is fine)
+  useEffect(() => { const storedCim = localStorage.getItem('nidhi:auditor:cimReport'); if (storedCim) { try { setCimReport(JSON.parse(storedCim)); } catch (_) {} } const storedTeaser = localStorage.getItem('nidhi:auditor:teaserReport'); if (storedTeaser) { try { setTeaserReport(JSON.parse(storedTeaser)); } catch (_) {} } }, []);
+  // Look up the user's active session from DB after auth resolves
+  useEffect(() => { if (authLoading || !user || session) return; (async () => { try { const data = await auditorInvoke({ action: 'lookup-session', userId: user.id }); if (data.session) { setSession(data.session as AuditorSession); setStep('upload'); } } catch (_) {} })(); }, [authLoading, user?.id]);
   useEffect(() => { if (session && step === 'upload') fetchStatus(); }, [session, step, fetchStatus]);
 
   const scrollToForm = () => formRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
 
   const handleSubmitForm = async (e: React.FormEvent) => {
     e.preventDefault(); if (!name.trim() || !companyName.trim()) { toast({ title: 'Required', description: 'Please enter your name and company name.', variant: 'destructive' }); return; }
-    try { const { data: { user } } = await supabase.auth.getUser(); const data = await auditorInvoke({ action: 'create-session', name: name.trim(), company_name: companyName.trim(), userId: user?.id || undefined }); if (data.error) throw new Error(String(data.error)); const sess: AuditorSession = { sessionId: data.sessionId as string, vaultId: data.vaultId as string, folderId: data.folderId as string, name: data.name as string, company_name: data.company_name as string, created_at: data.created_at as string }; setSession(sess); sessionStorage.setItem('nidhi:auditor:session', JSON.stringify(sess)); setStep('upload'); toast({ title: 'Welcome', description: `Hi ${data.name}, please upload your documents.` }); }
+    try { const { data: { user } } = await supabase.auth.getUser(); const data = await auditorInvoke({ action: 'create-session', name: name.trim(), company_name: companyName.trim(), userId: user?.id || undefined }); if (data.error) throw new Error(String(data.error)); const sess: AuditorSession = { sessionId: data.sessionId as string, vaultId: data.vaultId as string, folderId: data.folderId as string, name: data.name as string, company_name: data.company_name as string, created_at: data.created_at as string }; setSession(sess); setStep('upload'); toast({ title: 'Welcome', description: `Hi ${data.name}, please upload your documents.` }); }
     catch (e: any) { toast({ title: 'Error', description: e?.message || 'Failed to start', variant: 'destructive' }); }
   };
 
@@ -769,10 +771,10 @@ export default function Auditor() {
     return `<!DOCTYPE html><html><head><meta charset="UTF-8"><style>*{box-sizing:border-box;margin:0;padding:0;}body{font-family:'Helvetica Neue',Arial,sans-serif;font-size:11pt;color:#0f172a;background:#fff;line-height:1.6;}</style></head><body>${cover}${toc}${sections}${fallback}<div style="padding:16px 36px;background:#f8fafc;border-top:1px solid #e2e8f0;display:flex;justify-content:space-between;font-size:9pt;color:#94a3b8;"><span>SAMAVEDA CAPITAL</span><span>Risk Score: ${riskScore??'—'}/100 · Red Flags: ${allRedFlags.length} · Files: ${auditJob?.processed_files??0}</span><span>S T R I C T L Y &nbsp; C O N F I D E N T I A L</span></div></body></html>`;
   }, [auditJob?.report_markdown, auditJob?.report_json, auditJob?.processed_files, session?.company_name]);
 
-  const startCimGeneration = useCallback(async () => { if (!session?.vaultId || !session?.company_name || !session?.sessionId) return; const { data: { user } } = await supabase.auth.getUser(); if (!user) return; setCimError(null); setCimIsRunning(true); try { cimAbortRef.current = new AbortController(); const prefetched = await fetchDocumentsViaAuditor(session.sessionId); const report = await runCIMGeneration(session.vaultId, session.company_name, user.id, cimAbortRef.current.signal, undefined, prefetched ?? undefined); setCimReport(report); toast({ title: 'CIM generated' }); } catch (e: any) { setCimError(e?.message || 'Failed'); } finally { setCimIsRunning(false); cimAbortRef.current = null; } }, [session?.vaultId, session?.company_name, session?.sessionId, toast]);
+  const startCimGeneration = useCallback(async () => { if (!session?.vaultId || !session?.company_name || !session?.sessionId) return; const { data: { user } } = await supabase.auth.getUser(); if (!user) return; setCimError(null); setCimIsRunning(true); try { cimAbortRef.current = new AbortController(); const prefetched = await fetchDocumentsViaAuditor(session.sessionId); const report = await runCIMGeneration(session.vaultId, session.company_name, user.id, cimAbortRef.current.signal, undefined, prefetched ?? undefined); setCimReport(report); try { localStorage.setItem('nidhi:auditor:cimReport', JSON.stringify(report)); } catch (_) {} toast({ title: 'CIM generated' }); } catch (e: any) { setCimError(e?.message || 'Failed'); } finally { setCimIsRunning(false); cimAbortRef.current = null; } }, [session?.vaultId, session?.company_name, session?.sessionId, toast]);
   const downloadCimPdf = useCallback(async () => { if (!cimReport) return; const safeName = (session?.company_name || 'CIM').replace(/\s+/g, '_'); try { await capturePdfFromHtml(getFormattedCIM(cimReport), samavedaWatermark, `CIM_${safeName}_${new Date().toISOString().split('T')[0]}.pdf`); toast({ title: 'Downloaded' }); } catch (e: any) { toast({ title: 'Error', description: e?.message, variant: 'destructive' }); } }, [cimReport, session?.company_name, toast]);
 
-  const startTeaserGeneration = useCallback(async () => { if (!session?.vaultId || !session?.company_name || !session?.sessionId) return; const { data: { user } } = await supabase.auth.getUser(); if (!user) return; setTeaserError(null); setTeaserIsRunning(true); try { teaserAbortRef.current = new AbortController(); const prefetched = await fetchDocumentsViaAuditor(session.sessionId); const report = await runTeaserGeneration(session.vaultId, session.company_name, user.id, teaserAbortRef.current.signal, prefetched ?? undefined); setTeaserReport(report); toast({ title: 'Teaser generated' }); } catch (e: any) { if (e?.name !== 'AbortError') setTeaserError(e?.message || 'Failed'); } finally { setTeaserIsRunning(false); teaserAbortRef.current = null; } }, [session?.vaultId, session?.company_name, session?.sessionId, toast]);
+  const startTeaserGeneration = useCallback(async () => { if (!session?.vaultId || !session?.company_name || !session?.sessionId) return; const { data: { user } } = await supabase.auth.getUser(); if (!user) return; setTeaserError(null); setTeaserIsRunning(true); try { teaserAbortRef.current = new AbortController(); const prefetched = await fetchDocumentsViaAuditor(session.sessionId); const report = await runTeaserGeneration(session.vaultId, session.company_name, user.id, teaserAbortRef.current.signal, prefetched ?? undefined); setTeaserReport(report); try { localStorage.setItem('nidhi:auditor:teaserReport', JSON.stringify(report)); } catch (_) {} toast({ title: 'Teaser generated' }); } catch (e: any) { if (e?.name !== 'AbortError') setTeaserError(e?.message || 'Failed'); } finally { setTeaserIsRunning(false); teaserAbortRef.current = null; } }, [session?.vaultId, session?.company_name, session?.sessionId, toast]);
   const downloadTeaserPdf = useCallback(async () => { if (!teaserReport) return; const safeName = (session?.company_name || 'Teaser').replace(/\s+/g, '_'); try { await capturePdfFromHtml(getFormattedTeaser(teaserReport), samavedaWatermark, `Teaser_${safeName}_${new Date().toISOString().split('T')[0]}.pdf`); toast({ title: 'Downloaded' }); } catch (e: any) { toast({ title: 'Error', description: e?.message, variant: 'destructive' }); } }, [teaserReport, session?.company_name, toast]);
 
   const rootFolderId = session?.folderId ?? null; const effectiveFolderId = currentFolderId ?? rootFolderId;
@@ -790,7 +792,7 @@ export default function Auditor() {
           <div><h1 style={{ fontSize: 17, fontWeight: 700, color: '#0f172a', lineHeight: 1.2 }}>Audit Agent</h1><p style={{ fontSize: 9, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.18em' }}>by Samaveda Capital</p></div>
         </div>
         <div className="flex items-center gap-2">
-          {session && <button onClick={resetSession} className="sv-btn-outline" style={{ fontSize: 12, padding: '6px 14px' }}><ArrowLeft style={{ width: 14, height: 14 }} />New session</button>}
+          {session && (() => { const auditInProgress = auditJob && !['completed','failed','cancelled'].includes(auditJob.status); const busy = auditInProgress || cimIsRunning || teaserIsRunning; return (<button onClick={busy ? undefined : resetSession} className="sv-btn-outline" disabled={!!busy} title={busy ? 'Finish the current audit before starting a new session' : 'Start a new session'} style={{ fontSize: 12, padding: '6px 14px', opacity: busy ? 0.45 : 1, cursor: busy ? 'not-allowed' : undefined }}><ArrowLeft style={{ width: 14, height: 14 }} />New session</button>); })()}
           {step === 'form' && <button onClick={scrollToForm} className="sv-btn-navy">Start audit</button>}
           {user && (
             <>

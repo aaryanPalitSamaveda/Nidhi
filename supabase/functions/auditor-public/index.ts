@@ -95,12 +95,14 @@ Deno.serve(async (req: Request) => {
       }
 
       // Create auditor session
+      const { userId } = body;
       const { data: session, error: sessionErr } = await supabase
         .from("auditor_sessions")
         .insert({
           name: String(name).trim(),
           company_name: String(company_name).trim(),
           vault_id: vault.id,
+          ...(userId ? { user_id: userId } : {}),
         })
         .select("id, vault_id, name, company_name, created_at")
         .single();
@@ -500,6 +502,41 @@ Deno.serve(async (req: Request) => {
       }
 
       return jsonResponse({ documents });
+    }
+
+    // POST with action lookup-session — find the most recent session for a user
+    if (body?.action === "lookup-session" && req.method === "POST") {
+      const { userId } = body;
+      if (!userId) return jsonResponse({ error: "userId required" }, 400);
+
+      const { data: session } = await supabase
+        .from("auditor_sessions")
+        .select("id, vault_id, name, company_name, created_at")
+        .eq("user_id", userId)
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      if (!session) return jsonResponse({ session: null });
+
+      const { data: folder } = await supabase
+        .from("folders")
+        .select("id")
+        .eq("vault_id", session.vault_id)
+        .is("parent_id", null)
+        .limit(1)
+        .maybeSingle();
+
+      return jsonResponse({
+        session: {
+          sessionId: session.id,
+          vaultId: session.vault_id,
+          folderId: folder?.id ?? null,
+          name: session.name,
+          company_name: session.company_name,
+          created_at: session.created_at,
+        },
+      });
     }
 
     // GET .../status?sessionId=xxx or POST with action status
