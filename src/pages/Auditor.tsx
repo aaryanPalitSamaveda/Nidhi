@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect, useRef } from 'react';
+import { useState, useCallback, useEffect, useRef, useMemo } from 'react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Progress } from '@/components/ui/progress';
@@ -7,7 +7,7 @@ import {
   FileText, Upload, File, Loader2, Download, ArrowLeft,
   FolderOpen, Folder, ChevronRight, Shield,
   Search, Zap, AlertTriangle, BarChart3, Lock, CheckCircle2,
-  ArrowDown, Clock, Users, ChevronDown, Sparkles, X,
+  ArrowDown, Clock, Users, ChevronDown, Sparkles, X, LogOut,
 } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -16,6 +16,8 @@ import logo from '@/assets/samaveda-logo.jpeg';
 import samavedaWatermark from '@/assets/samavedaWatermark.png';
 import { formatFileSize } from '@/utils/format';
 import { supabase } from '@/integrations/supabase/client';
+import { signOut } from '@/lib/auth';
+import { useAuth } from '@/contexts/AuthContext';
 import { runCIMGeneration, getFormattedCIM } from '@/services/CIM/cimGenerationController';
 import { runTeaserGeneration, getFormattedTeaser } from '@/services/teaser/teaserGenerationController';
 import { fetchDocumentsViaAuditor } from '@/services/fraud/documentFetcher';
@@ -81,7 +83,7 @@ type Step = 'form' | 'upload' | 'audit';
 interface AuditorSession { sessionId: string; vaultId: string; folderId: string; name: string; company_name: string; created_at: string; }
 interface DocInfo { id: string; name: string; file_path: string; file_size: number | null; file_type: string | null; folder_id?: string | null; }
 interface FolderInfo { id: string; name: string; parent_id: string | null; }
-interface AuditJob { id: string; status: string; progress: number; total_files: number; processed_files: number; current_step: string; report_markdown: string | null; }
+interface AuditJob { id: string; status: string; progress: number; total_files: number; processed_files: number; current_step: string; report_markdown: string | null; report_json?: any; }
 
 /* ───────────────────────── Premium UI Hooks & Components ───────────────────────── */
 
@@ -447,8 +449,6 @@ const DETECTIONS = ['Revenue mismatches & suppression','Tax evasion indicators (
 const INJECTED_CSS = `
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
 *{font-family:Inter,system-ui,-apple-system,sans-serif;box-sizing:border-box}
-
-/* Keyframes */
 @keyframes svShimmer{0%{background-position:-200% center}100%{background-position:200% center}}
 @keyframes svSlideUp{from{opacity:0;transform:translateY(16px)}to{opacity:1;transform:translateY(0)}}
 @keyframes svFadeIn{from{opacity:0}to{opacity:1}}
@@ -462,22 +462,14 @@ const INJECTED_CSS = `
 @keyframes svBorderRotate{0%{background-position:0% 50%}50%{background-position:100% 50%}100%{background-position:0% 50%}}
 @keyframes spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:0.4}}
-
-/* Shimmer bar */
 .sv-shimmer{height:3px;background:linear-gradient(90deg,#1e3a8a,#3b82f6,#93c5fd,#3b82f6,#1e3a8a);background-size:200% 100%;animation:svShimmer 2.5s linear infinite}
-
-/* Cards */
 .sv-card{background:#ffffff;border:1px solid #e2e8f0;border-radius:16px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,0.03);transition:all 0.35s cubic-bezier(0.16,1,0.3,1)}
 .sv-card:hover{box-shadow:0 8px 30px rgba(30,58,138,0.06),0 1px 3px rgba(0,0,0,0.04);border-color:#c7d2fe;transform:translateY(-2px)}
 .sv-card-static{background:#ffffff;border:1px solid #e2e8f0;border-radius:16px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,0.03)}
-
-/* Premium animated border card */
 .sv-card-premium{position:relative;background:#ffffff;border-radius:18px;overflow:hidden;box-shadow:0 4px 24px rgba(30,58,138,0.06)}
 .sv-card-premium::before{content:'';position:absolute;inset:-2px;border-radius:20px;background:linear-gradient(135deg,#1e3a8a,#3b82f6,#93c5fd,#3b82f6,#1e3a8a);background-size:300% 300%;animation:svBorderRotate 4s ease infinite;z-index:0}
 .sv-card-premium::after{content:'';position:absolute;inset:2px;border-radius:16px;background:#ffffff;z-index:1}
 .sv-card-premium>*{position:relative;z-index:2}
-
-/* Buttons */
 .sv-btn-navy{display:inline-flex;align-items:center;justify-content:center;gap:8px;padding:10px 24px;border-radius:10px;background:linear-gradient(135deg,#1e3a8a 0%,#1d4ed8 100%);color:#fff;font-size:13px;font-weight:600;border:none;cursor:pointer;transition:all 0.25s ease;box-shadow:0 2px 8px rgba(30,58,138,0.18)}
 .sv-btn-navy:hover{box-shadow:0 4px 16px rgba(30,58,138,0.25);transform:translateY(-1px)}
 .sv-btn-navy:active{transform:translateY(0);box-shadow:0 1px 4px rgba(30,58,138,0.15)}
@@ -487,20 +479,14 @@ const INJECTED_CSS = `
 .sv-btn-outline:disabled{opacity:0.5;cursor:not-allowed}
 .sv-btn-danger{display:inline-flex;align-items:center;justify-content:center;gap:8px;padding:10px 20px;border-radius:10px;background:#fff;color:#dc2626;font-size:13px;font-weight:500;border:1px solid #fecaca;cursor:pointer;transition:all 0.2s}
 .sv-btn-danger:hover{background:#fef2f2;border-color:#fca5a5}
-
-/* Badges */
 .sv-badge-navy{display:flex;align-items:center;gap:6px;padding:4px 12px;border-radius:8px;background:#eff6ff;border:1px solid #bfdbfe;color:#1e3a8a}
 .sv-badge-green{display:flex;align-items:center;gap:6px;padding:3px 10px;border-radius:8px;background:#ecfdf5;border:1px solid #a7f3d0;color:#059669}
 .sv-badge-red{display:flex;align-items:center;gap:6px;padding:3px 10px;border-radius:8px;background:#fef2f2;border:1px solid #fecaca;color:#dc2626}
 .sv-badge-success-lg{display:inline-flex;align-items:center;gap:10px;padding:10px 20px;border-radius:999px;background:#f0fdf4;border:1px solid #bbf7d0;font-size:13px;font-weight:600;color:#059669}
-
-/* Progress */
 .sv-progress-track{height:10px;border-radius:5px;background:#f1f5f9;overflow:hidden}
 .sv-progress-track-sm{height:4px;border-radius:2px;background:#f1f5f9;overflow:hidden}
 .sv-progress-fill-navy{height:100%;border-radius:5px;transition:width 0.7s ease-out;background:linear-gradient(90deg,#1e3a8a,#3b82f6)}
 .sv-progress-fill-green{height:100%;border-radius:5px;transition:width 0.7s ease-out;background:linear-gradient(90deg,#059669,#10b981)}
-
-/* Chips / Toggles */
 .sv-chip{padding:6px 14px;border-radius:8px;font-size:11px;font-weight:500;border:1px solid #e2e8f0;background:#fff;color:#64748b;cursor:pointer;transition:all 0.2s}
 .sv-chip:hover{border-color:#93c5fd;color:#1e3a8a}
 .sv-chip-active{padding:6px 14px;border-radius:8px;font-size:11px;font-weight:600;border:1px solid #93c5fd;background:#eff6ff;color:#1e3a8a;cursor:pointer}
@@ -508,30 +494,18 @@ const INJECTED_CSS = `
 .sv-toggle{padding:6px 14px;border-radius:9px;font-size:11px;font-weight:500;border:none;background:transparent;color:#64748b;cursor:pointer;transition:all 0.2s}
 .sv-toggle:hover{color:#1e293b}
 .sv-toggle-active{padding:6px 14px;border-radius:9px;font-size:11px;font-weight:600;border:none;background:#fff;color:#1e3a8a;cursor:pointer;box-shadow:0 1px 3px rgba(0,0,0,0.06)}
-
-/* Icon circles */
 .sv-icon-circle-navy{border-radius:14px;background:linear-gradient(135deg,#1e3a8a,#1d4ed8);display:flex;align-items:center;justify-content:center;color:#fff;box-shadow:0 4px 12px rgba(30,58,138,0.2)}
 .sv-icon-circle-light{width:40px;height:40px;border-radius:12px;background:#eff6ff;display:flex;align-items:center;justify-content:center;flex-shrink:0}
-
-/* Section labels */
 .sv-section-label{font-size:11px;font-weight:600;color:#1e3a8a;text-transform:uppercase;letter-spacing:0.12em;margin-bottom:12px}
 .sv-section-title{font-size:28px;font-weight:700;color:#0f172a;letter-spacing:-0.02em;line-height:1.2}
-
-/* File list hover */
 .sv-file-item{display:flex;align-items:center;gap:10px;padding:10px 12px;border-radius:10px;transition:background 0.2s ease;cursor:default}
 .sv-file-item:hover{background:#f8fafc}
 .sv-folder-item{display:flex;align-items:center;gap:10px;width:100%;text-align:left;padding:10px 12px;border-radius:10px;border:none;background:transparent;cursor:pointer;transition:all 0.2s ease}
 .sv-folder-item:hover{background:#eff6ff}
-
-/* Info box */
 .sv-info-box{display:flex;align-items:flex-start;gap:14px;padding:16px 18px;border-radius:14px;background:#f8fafc;border:1px solid #e2e8f0}
 .sv-error-box{display:flex;align-items:center;gap:10px;padding:12px 16px;border-radius:12px;background:#fef2f2;border:1px solid #fecaca}
-
-/* Header */
 .sv-header{position:sticky;top:0;z-index:50;display:flex;align-items:center;justify-content:space-between;padding:10px 24px;transition:all 0.35s ease}
 .sv-header-scrolled{background:rgba(250,248,245,0.96)!important;backdrop-filter:blur(20px) saturate(1.2)!important;-webkit-backdrop-filter:blur(20px) saturate(1.2)!important;border-bottom:1px solid #e2e8f0!important;box-shadow:0 1px 12px rgba(0,0,0,0.04)!important}
-
-/* Table */
 .sv-table{border-radius:16px;overflow:hidden;border:1px solid #e2e8f0}
 .sv-table table{width:100%;border-collapse:collapse}
 .sv-table thead tr{background:#f8fafc}
@@ -543,11 +517,12 @@ const INJECTED_CSS = `
 `;
 
 /* ═══════════════════════════ MAIN COMPONENT ═══════════════════════════ */
+/* Auth is handled by ProtectedRoute wrapper in App.tsx */
 
 export default function Auditor() {
   const [step, setStep] = useState<Step>('form');
   const [name, setName] = useState(''); const [companyName, setCompanyName] = useState('');
-  const [session, setSession] = useState<AuditorSession | null>(null); const [authReady, setAuthReady] = useState(false);
+  const [session, setSession] = useState<AuditorSession | null>(null);
   const [documents, setDocuments] = useState<DocInfo[]>([]); const [folders, setFolders] = useState<FolderInfo[]>([]);
   const [currentFolderId, setCurrentFolderId] = useState<string | null>(null); const [auditJob, setAuditJob] = useState<AuditJob | null>(null);
   const [auditError, setAuditError] = useState<string | null>(null); const [auditIsRunning, setAuditIsRunning] = useState(false);
@@ -559,12 +534,16 @@ export default function Auditor() {
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null); const reportContentRef = useRef<HTMLDivElement>(null);
   const cimAbortRef = useRef<AbortController | null>(null); const teaserAbortRef = useRef<AbortController | null>(null);
   const formRef = useRef<HTMLDivElement>(null); const { toast } = useToast(); const formTilt = use3DTilt(4);
-  const [authError, setAuthError] = useState<string | null>(null);
+  const { user, profile } = useAuth();
+
+  const handleSignOut = useCallback(async () => {
+    await signOut();
+    sessionStorage.removeItem('nidhi:auditor:session');
+    window.location.href = '/auditor/auth';
+  }, []);
 
   useEffect(() => { const id = 'audit-enhanced-css'; if (!document.getElementById(id)) { const s = document.createElement('style'); s.id = id; s.textContent = INJECTED_CSS; document.head.appendChild(s); } }, []);
   useEffect(() => { const h = () => setHeaderScrolled(window.scrollY > 50); window.addEventListener('scroll', h, { passive: true }); return () => window.removeEventListener('scroll', h); }, []);
-
-  useEffect(() => { let mounted = true; (async () => { const { data: { session: existing } } = await supabase.auth.getSession(); if (existing && mounted) { setAuthReady(true); return; } const { error } = await supabase.auth.signInAnonymously(); if (mounted) { setAuthReady(true); if (error) setAuthError('Anonymous sign-in is required.'); } })(); return () => { mounted = false; }; }, []);
 
   const resetSession = useCallback(() => { sessionStorage.removeItem('nidhi:auditor:session'); setSession(null); setStep('form'); setDocuments([]); setFolders([]); setCurrentFolderId(null); setAuditJob(null); setAuditError(null); setCimReport(null); setCimError(null); setTeaserReport(null); setTeaserError(null); }, []);
 
@@ -576,7 +555,7 @@ export default function Auditor() {
   }, [session?.sessionId, resetSession]);
 
   useEffect(() => { const stored = sessionStorage.getItem('nidhi:auditor:session'); if (stored) { try { const s = JSON.parse(stored); setSession(s); setStep('upload'); } catch (_) {} } }, []);
-  useEffect(() => { if (authReady && session && step === 'upload') fetchStatus(); }, [authReady, session, step, fetchStatus]);
+  useEffect(() => { if (session && step === 'upload') fetchStatus(); }, [session, step, fetchStatus]);
 
   const scrollToForm = () => formRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
 
@@ -626,8 +605,60 @@ export default function Auditor() {
   useEffect(() => { if (auditJob?.status === 'running' || auditJob?.status === 'queued') fetchStatus(); }, [auditJob?.status, fetchStatus]);
 
   const stopAudit = useCallback(async () => { if (!auditJob?.id || ['completed','failed','cancelled'].includes(auditJob.status)) return; setAuditJob((prev) => prev ? { ...prev, status: 'cancelled' } : null); setAuditError(null); toast({ title: 'Audit stopped' }); try { await auditorInvoke({ action: 'cancel-audit', jobId: auditJob.id }); } catch (_) {} }, [auditJob?.id, auditJob?.status, toast]);
+  
+  const downloadReport = async () => {
+    const md = auditJob?.report_markdown;
+    if (!md) return;
 
-  const downloadReport = async () => { const md = auditJob?.report_markdown; if (!md || !reportContentRef.current) return; try { toast({ title: 'Generating PDF...' }); reportContentRef.current.scrollIntoView({ behavior: 'instant', block: 'start' }); await new Promise((r) => setTimeout(r, 400)); const html2pdf = (await import('html2pdf.js')).default; const safeName = (session?.company_name || 'report').replace(/\s+/g, '_'); const pdfBlob = await html2pdf().set({ margin: 10, filename: `audit_report_${safeName}_${new Date().toISOString().slice(0, 10)}.pdf`, image: { type: 'jpeg', quality: 0.98 }, html2canvas: { scale: 2, backgroundColor: '#ffffff', useCORS: true, logging: false }, jsPDF: { orientation: 'portrait', unit: 'mm', format: 'a4' } }).from(reportContentRef.current).outputPdf('blob'); const url = URL.createObjectURL(pdfBlob); const a = document.createElement('a'); a.href = url; a.download = `audit_report_${safeName}_${new Date().toISOString().slice(0, 10)}.pdf`; a.click(); URL.revokeObjectURL(url); toast({ title: 'PDF Downloaded' }); } catch (e: any) { toast({ title: 'Error', description: e?.message, variant: 'destructive' }); } };
+    const dataroomName = session?.company_name ?? 'Audit Report';
+    const reportDate = new Date().toLocaleDateString('en-IN', {
+      day: 'numeric', month: 'long', year: 'numeric',
+    });
+
+    const rj: any = auditJob?.report_json ?? null;
+
+    const esc = (s: string) =>
+      String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+    const severityColor = (s: string) => {
+      const sev = (s || '').toLowerCase();
+      if (sev === 'critical' || sev === 'high') return '#dc2626';
+      if (sev === 'medium') return '#d97706';
+      return '#16a34a';
+    };
+    const severityBg = (s: string) => {
+      const sev = (s || '').toLowerCase();
+      if (sev === 'critical' || sev === 'high') return '#fef2f2';
+      if (sev === 'medium') return '#fffbeb';
+      return '#f0fdf4';
+    };
+    const severityLabel = (s: string) => (s || 'UNKNOWN').toUpperCase();
+
+    const watermarkSvg = `<div style="position:fixed;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:0;overflow:hidden;"><svg width="100%" height="100%" xmlns="http://www.w3.org/2000/svg"><text x="50%" y="50%" dominant-baseline="middle" text-anchor="middle" font-size="96" font-family="Georgia,serif" fill="rgba(180,140,100,0.08)" transform="rotate(-35 420 420)" font-weight="bold" letter-spacing="4">SAMAVEDA CAPITAL</text></svg></div>`;
+    const pageWatermark = `<div style="position:fixed;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:0;overflow:hidden;"><svg width="100%" height="100%" xmlns="http://www.w3.org/2000/svg"><text x="50%" y="50%" dominant-baseline="middle" text-anchor="middle" font-size="80" font-family="Georgia,serif" fill="rgba(180,140,100,0.055)" transform="rotate(-35 420 420)" font-weight="bold" letter-spacing="4">SAMAVEDA CAPITAL</text></svg></div>`;
+
+    const renderTable = (headers: string[], rows: string[][]): string => {
+      if (!rows.length) return '';
+      return `<table style="width:100%;border-collapse:collapse;margin:14px 0;font-size:10pt;"><thead><tr>${headers.map(h => `<th style="border:1px solid #e2e8f0;padding:8px 10px;background:#f8fafc;font-weight:700;color:#334155;text-align:left;">${esc(h)}</th>`).join('')}</tr></thead><tbody>${rows.map((row, i) => `<tr style="${i % 2 === 1 ? 'background:#f8fafc;' : ''}">${row.map(c => `<td style="border:1px solid #e2e8f0;padding:7px 10px;color:#0f172a;">${esc(c)}</td>`).join('')}</tr>`).join('')}</tbody></table>`;
+    };
+
+    const renderRedFlagBox = (title: string, severity: string, detail: string, extra = ''): string =>
+      `<div style="border-left:4px solid ${severityColor(severity)};background:${severityBg(severity)};padding:14px 16px;margin:14px 0;border-radius:0 6px 6px 0;page-break-inside:avoid;"><div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;"><span style="background:${severityColor(severity)};color:#fff;font-size:8pt;font-weight:700;padding:2px 8px;border-radius:4px;letter-spacing:.05em;">${severityLabel(severity)}</span><strong style="color:#0f172a;font-size:11pt;">${esc(title)}</strong></div><p style="color:#374151;margin:0 0 8px;font-size:10.5pt;">${esc(detail)}</p>${extra}</div>`;
+    
+    toast({ title: 'Generating report...' });
+    const printWindow = window.open('', '_blank', 'width=1000,height=800');
+    if (!printWindow) {
+      toast({ title: 'Please allow popups', description: 'The report opens in a new tab.', variant: 'destructive' });
+      return;
+    }
+    toast({ title: 'Report opened for printing', description: 'In the print dialog, set destination to "Save as PDF".' });
+  };
+
+  const previewHtml = useMemo(() => {
+    const md = auditJob?.report_markdown;
+    if (!md) return '';
+    return '';
+  }, [auditJob?.report_markdown, auditJob?.report_json, auditJob?.processed_files, session?.company_name]);
 
   const startCimGeneration = useCallback(async () => { if (!session?.vaultId || !session?.company_name || !session?.sessionId) return; const { data: { user } } = await supabase.auth.getUser(); if (!user) return; setCimError(null); setCimIsRunning(true); try { cimAbortRef.current = new AbortController(); const prefetched = await fetchDocumentsViaAuditor(session.sessionId); const report = await runCIMGeneration(session.vaultId, session.company_name, user.id, cimAbortRef.current.signal, undefined, prefetched ?? undefined); setCimReport(report); toast({ title: 'CIM generated' }); } catch (e: any) { setCimError(e?.message || 'Failed'); } finally { setCimIsRunning(false); cimAbortRef.current = null; } }, [session?.vaultId, session?.company_name, session?.sessionId, toast]);
   const downloadCimPdf = useCallback(async () => { if (!cimReport) return; const safeName = (session?.company_name || 'CIM').replace(/\s+/g, '_'); try { await capturePdfFromHtml(getFormattedCIM(cimReport), samavedaWatermark, `CIM_${safeName}_${new Date().toISOString().split('T')[0]}.pdf`); toast({ title: 'Downloaded' }); } catch (e: any) { toast({ title: 'Error', description: e?.message, variant: 'destructive' }); } }, [cimReport, session?.company_name, toast]);
@@ -652,16 +683,19 @@ export default function Auditor() {
         <div className="flex items-center gap-2">
           {session && <button onClick={resetSession} className="sv-btn-outline" style={{ fontSize: 12, padding: '6px 14px' }}><ArrowLeft style={{ width: 14, height: 14 }} />New session</button>}
           {step === 'form' && <button onClick={scrollToForm} className="sv-btn-navy">Start audit</button>}
+          {user && (
+            <>
+              <div style={{ width: 1, height: 20, background: '#e2e8f0', margin: '0 4px' }} />
+              <span style={{ fontSize: 11, color: '#64748b', maxWidth: 140, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{profile?.fullName || user.email}</span>
+              <button onClick={handleSignOut} className="sv-btn-outline" style={{ fontSize: 12, padding: '6px 12px', color: '#dc2626', borderColor: '#fecaca' }}><LogOut style={{ width: 14, height: 14 }} />Sign out</button>
+            </>
+          )}
         </div>
       </header>
 
       <main style={{ position: 'relative', zIndex: 10 }}>
-        {/* Loading */}
-        {!authReady && <div className="flex flex-col items-center justify-center py-32 gap-4"><Loader2 style={{ width: 40, height: 40, color: '#1e3a8a', animation: 'spin 1s linear infinite' }} /><p style={{ fontSize: 14, color: '#64748b' }}>Preparing your secure session...</p></div>}
-        {authReady && authError && <div style={{ maxWidth: 480, margin: '80px auto', padding: 24, borderRadius: 16, border: '1px solid #fecaca', background: '#fef2f2', textAlign: 'center' }}><p style={{ color: '#dc2626', fontWeight: 500 }}>{authError}</p></div>}
-
         {/* ═══════════ LANDING PAGE ═══════════ */}
-        {authReady && !authError && step === 'form' && (
+        {step === 'form' && (
           <StepTransition stepKey="form">
           <div style={{ maxWidth: 960, margin: '0 auto', padding: '0 24px' }}>
             <section style={{ textAlign: 'center', paddingTop: 80, paddingBottom: 64 }}>
@@ -675,56 +709,19 @@ export default function Auditor() {
             </section>
             <AnimatedSection className="grid grid-cols-4 gap-4" style={{ marginBottom: 120 }}>{[{ num: '6', label: 'Document types' }, { num: '5', label: 'Cross-verifications', suffix: '+' }, { num: '900', label: 'Integrations', suffix: '+' }, { num: '<5 min', label: 'Average audit time' }].map((s, i) => (<div key={i} className="sv-card" style={{ textAlign: 'center', padding: '20px 12px' }}><div style={{ fontSize: 26, fontWeight: 700, color: '#1e3a8a' }}><AnimatedCounter target={s.num} suffix={s.suffix} /></div><div style={{ fontSize: 12, color: '#64748b', marginTop: 4 }}>{s.label}</div></div>))}</AnimatedSection>
 
-            <AnimatedSection><section id="audit-why" style={{ marginBottom: 80, paddingTop: 40 }}>
-              <div style={{ textAlign: 'center', marginBottom: 48 }}><p className="sv-section-label">Why this matters</p><h3 className="sv-section-title">The due diligence gap is costing deals</h3><p style={{ color: '#64748b', fontSize: 15, maxWidth: 600, margin: '12px auto 0', lineHeight: 1.6 }}>India's mid-market M&A is a ₹3,000–8,000 Cr annual advisory fee pool — chronically underserved.</p></div>
-              <div className="grid grid-cols-3 gap-4">{[{ num: '₹25–50L', sub: 'Big 4 forensic audit cost', detail: 'Per engagement, 6–8 week turnaround' }, { num: '40%', sub: 'CARO 2020 non-compliance', detail: 'Companies flagged for discrepancies' }, { num: '60%+', sub: 'Mid-market by deal count', detail: '2,186 deals, $116B — GT 2024' }].map((item, i) => (<AnimatedSection key={i} delay={i * 100}><div className="sv-card" style={{ textAlign: 'center', padding: 24 }}><div style={{ fontSize: 26, fontWeight: 700, color: '#1e3a8a' }}>{item.num}</div><div style={{ fontSize: 14, fontWeight: 600, color: '#0f172a', marginTop: 6 }}>{item.sub}</div><div style={{ fontSize: 12, color: '#64748b', marginTop: 4 }}>{item.detail}</div></div></AnimatedSection>))}</div>
-            </section></AnimatedSection>
+            <AnimatedSection><section id="audit-why" style={{ marginBottom: 80, paddingTop: 40 }}><div style={{ textAlign: 'center', marginBottom: 48 }}><p className="sv-section-label">Why this matters</p><h3 className="sv-section-title">The due diligence gap is costing deals</h3><p style={{ color: '#64748b', fontSize: 15, maxWidth: 600, margin: '12px auto 0', lineHeight: 1.6 }}>India's mid-market M&A is a ₹3,000–8,000 Cr annual advisory fee pool — chronically underserved.</p></div><div className="grid grid-cols-3 gap-4">{[{ num: '₹25–50L', sub: 'Big 4 forensic audit cost', detail: 'Per engagement, 6–8 week turnaround' }, { num: '40%', sub: 'CARO 2020 non-compliance', detail: 'Companies flagged for discrepancies' }, { num: '60%+', sub: 'Mid-market by deal count', detail: '2,186 deals, $116B — GT 2024' }].map((item, i) => (<AnimatedSection key={i} delay={i * 100}><div className="sv-card" style={{ textAlign: 'center', padding: 24 }}><div style={{ fontSize: 26, fontWeight: 700, color: '#1e3a8a' }}>{item.num}</div><div style={{ fontSize: 14, fontWeight: 600, color: '#0f172a', marginTop: 6 }}>{item.sub}</div><div style={{ fontSize: 12, color: '#64748b', marginTop: 4 }}>{item.detail}</div></div></AnimatedSection>))}</div></section></AnimatedSection>
 
-            <AnimatedSection><section style={{ marginBottom: 80 }}>
-              <div style={{ textAlign: 'center', marginBottom: 48 }}><p className="sv-section-label">Capabilities</p><h3 className="sv-section-title">Everything a forensic auditor checks — automated</h3></div>
-              <div className="grid grid-cols-2 gap-4">{FEATURES.map((f, i) => { const Icon = f.icon; return (<AnimatedSection key={i} delay={i * 80}><div className="sv-card" style={{ display: 'flex', gap: 16, padding: 20, height: '100%' }}><div className="sv-icon-circle-light"><Icon style={{ width: 20, height: 20, color: '#1e3a8a' }} /></div><div><div style={{ fontSize: 15, fontWeight: 600, color: '#0f172a', marginBottom: 4 }}>{f.title}</div><div style={{ fontSize: 13, color: '#64748b', lineHeight: 1.6 }}>{f.desc}</div></div></div></AnimatedSection>); })}</div>
-            </section></AnimatedSection>
+            <AnimatedSection><section style={{ marginBottom: 80 }}><div style={{ textAlign: 'center', marginBottom: 48 }}><p className="sv-section-label">Capabilities</p><h3 className="sv-section-title">Everything a forensic auditor checks — automated</h3></div><div className="grid grid-cols-2 gap-4">{FEATURES.map((f, i) => { const Icon = f.icon; return (<AnimatedSection key={i} delay={i * 80}><div className="sv-card" style={{ display: 'flex', gap: 16, padding: 20, height: '100%' }}><div className="sv-icon-circle-light"><Icon style={{ width: 20, height: 20, color: '#1e3a8a' }} /></div><div><div style={{ fontSize: 15, fontWeight: 600, color: '#0f172a', marginBottom: 4 }}>{f.title}</div><div style={{ fontSize: 13, color: '#64748b', lineHeight: 1.6 }}>{f.desc}</div></div></div></AnimatedSection>); })}</div></section></AnimatedSection>
 
-            <AnimatedSection><section style={{ marginBottom: 80 }}>
-              <div style={{ textAlign: 'center', marginBottom: 48 }}><p className="sv-section-label">Supported documents</p><h3 className="sv-section-title">Upload any combination of these</h3></div>
-              <div className="grid grid-cols-3 gap-3">{DOC_TYPES.map((d, i) => (<AnimatedSection key={i} delay={i * 60}><div className="sv-card" style={{ padding: 20, height: '100%' }}><div className="flex items-center gap-2" style={{ marginBottom: 8 }}><FileText style={{ width: 16, height: 16, color: '#1e3a8a' }} /><span style={{ fontSize: 14, fontWeight: 600, color: '#0f172a' }}>{d.label}</span></div><div style={{ fontSize: 12, color: '#64748b', lineHeight: 1.5 }}>{d.points}</div></div></AnimatedSection>))}</div>
-            </section></AnimatedSection>
+            <AnimatedSection><section style={{ marginBottom: 80 }}><div style={{ textAlign: 'center', marginBottom: 48 }}><p className="sv-section-label">Supported documents</p><h3 className="sv-section-title">Upload any combination of these</h3></div><div className="grid grid-cols-3 gap-3">{DOC_TYPES.map((d, i) => (<AnimatedSection key={i} delay={i * 60}><div className="sv-card" style={{ padding: 20, height: '100%' }}><div className="flex items-center gap-2" style={{ marginBottom: 8 }}><FileText style={{ width: 16, height: 16, color: '#1e3a8a' }} /><span style={{ fontSize: 14, fontWeight: 600, color: '#0f172a' }}>{d.label}</span></div><div style={{ fontSize: 12, color: '#64748b', lineHeight: 1.5 }}>{d.points}</div></div></AnimatedSection>))}</div></section></AnimatedSection>
 
-            <AnimatedSection><section style={{ marginBottom: 80 }}>
-              <div style={{ textAlign: 'center', marginBottom: 48 }}><p className="sv-section-label">Verification matrix</p><h3 className="sv-section-title">Cross-document reconciliation</h3></div>
-              <div className="sv-table"><table><thead><tr>{['Verification','Logic','Red flag'].map((h) => (<th key={h}>{h}</th>))}</tr></thead><tbody>{VERIFICATIONS.map((v, i) => (<tr key={i}><td style={{ fontSize: 13, fontWeight: 500, color: '#0f172a' }}>{v.check}</td><td style={{ fontSize: 13, color: '#64748b' }}>{v.logic}</td><td><span style={{ fontSize: 12, fontWeight: 600, color: '#dc2626', background: '#fef2f2', padding: '4px 10px', borderRadius: 6 }}>{v.flag}</span></td></tr>))}</tbody></table></div>
-            </section></AnimatedSection>
+            <AnimatedSection><section style={{ marginBottom: 80 }}><div style={{ textAlign: 'center', marginBottom: 48 }}><p className="sv-section-label">Verification matrix</p><h3 className="sv-section-title">Cross-document reconciliation</h3></div><div className="sv-table"><table><thead><tr>{['Verification','Logic','Red flag'].map((h) => (<th key={h}>{h}</th>))}</tr></thead><tbody>{VERIFICATIONS.map((v, i) => (<tr key={i}><td style={{ fontSize: 13, fontWeight: 500, color: '#0f172a' }}>{v.check}</td><td style={{ fontSize: 13, color: '#64748b' }}>{v.logic}</td><td><span style={{ fontSize: 12, fontWeight: 600, color: '#dc2626', background: '#fef2f2', padding: '4px 10px', borderRadius: 6 }}>{v.flag}</span></td></tr>))}</tbody></table></div></section></AnimatedSection>
 
-            <AnimatedSection><section style={{ marginBottom: 80 }}>
-              <div style={{ textAlign: 'center', marginBottom: 48 }}><p className="sv-section-label">Process</p><h3 className="sv-section-title">Three steps to a forensic audit</h3></div>
-              <div className="grid grid-cols-3 gap-4">{[{ step: '01', icon: Users, title: 'Enter details', desc: 'Provide your name and company name.' }, { step: '02', icon: Upload, title: 'Upload documents', desc: 'Drop GST, ITR, bank statements, Tally exports.' }, { step: '03', icon: FileText, title: 'Get your report', desc: 'AI generates forensic audit, CIM, and teaser.' }].map((s, i) => { const Icon = s.icon; return (<AnimatedSection key={i} delay={i * 120}><div className="sv-card" style={{ position: 'relative', textAlign: 'center', padding: 24, height: '100%' }}><div style={{ position: 'absolute', top: 12, right: 16, fontSize: 32, fontWeight: 800, color: '#f1f5f9' }}>{s.step}</div><div className="sv-icon-circle-navy" style={{ width: 44, height: 44, margin: '0 auto 16px' }}><Icon style={{ width: 20, height: 20 }} /></div><div style={{ fontSize: 16, fontWeight: 600, color: '#0f172a', marginBottom: 6 }}>{s.title}</div><div style={{ fontSize: 13, color: '#64748b', lineHeight: 1.6 }}>{s.desc}</div></div></AnimatedSection>); })}</div>
-            </section></AnimatedSection>
+            <AnimatedSection><section style={{ marginBottom: 80 }}><div style={{ textAlign: 'center', marginBottom: 48 }}><p className="sv-section-label">Process</p><h3 className="sv-section-title">Three steps to a forensic audit</h3></div><div className="grid grid-cols-3 gap-4">{[{ step: '01', icon: Users, title: 'Enter details', desc: 'Provide your name and company name.' }, { step: '02', icon: Upload, title: 'Upload documents', desc: 'Drop GST, ITR, bank statements, Tally exports.' }, { step: '03', icon: FileText, title: 'Get your report', desc: 'AI generates forensic audit, CIM, and teaser.' }].map((s, i) => { const Icon = s.icon; return (<AnimatedSection key={i} delay={i * 120}><div className="sv-card" style={{ position: 'relative', textAlign: 'center', padding: 24, height: '100%' }}><div style={{ position: 'absolute', top: 12, right: 16, fontSize: 32, fontWeight: 800, color: '#f1f5f9' }}>{s.step}</div><div className="sv-icon-circle-navy" style={{ width: 44, height: 44, margin: '0 auto 16px' }}><Icon style={{ width: 20, height: 20 }} /></div><div style={{ fontSize: 16, fontWeight: 600, color: '#0f172a', marginBottom: 6 }}>{s.title}</div><div style={{ fontSize: 13, color: '#64748b', lineHeight: 1.6 }}>{s.desc}</div></div></AnimatedSection>); })}</div></section></AnimatedSection>
 
-            <AnimatedSection><section style={{ marginBottom: 80 }}>
-              <div style={{ textAlign: 'center', marginBottom: 40 }}><p className="sv-section-label">AI detection</p><h3 className="sv-section-title">What the AI catches</h3></div>
-              <div className="grid grid-cols-2 gap-2.5" style={{ maxWidth: 680, margin: '0 auto' }}>{DETECTIONS.map((item, i) => (<AnimatedSection key={i} delay={i * 50}><div className="sv-card" style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '12px 16px' }}><CheckCircle2 style={{ width: 16, height: 16, color: '#1e3a8a', flexShrink: 0 }} /><span style={{ fontSize: 13, color: '#475569' }}>{item}</span></div></AnimatedSection>))}</div>
-            </section></AnimatedSection>
+            <AnimatedSection><section style={{ marginBottom: 80 }}><div style={{ textAlign: 'center', marginBottom: 40 }}><p className="sv-section-label">AI detection</p><h3 className="sv-section-title">What the AI catches</h3></div><div className="grid grid-cols-2 gap-2.5" style={{ maxWidth: 680, margin: '0 auto' }}>{DETECTIONS.map((item, i) => (<AnimatedSection key={i} delay={i * 50}><div className="sv-card" style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '12px 16px' }}><CheckCircle2 style={{ width: 16, height: 16, color: '#1e3a8a', flexShrink: 0 }} /><span style={{ fontSize: 13, color: '#475569' }}>{item}</span></div></AnimatedSection>))}</div></section></AnimatedSection>
 
-            <AnimatedSection><section ref={formRef} style={{ marginBottom: 80 }}>
-              <div style={{ textAlign: 'center', marginBottom: 32 }}>
-                <div className="sv-icon-circle-navy" style={{ width: 56, height: 56, display: 'inline-flex', marginBottom: 16, animation: 'svFloat 3s ease-in-out infinite' }}><FileText style={{ width: 28, height: 28 }} /></div>
-                <h3 style={{ fontSize: 26, fontWeight: 700, color: '#0f172a', marginBottom: 8 }}>Start your audit</h3>
-                <p style={{ fontSize: 14, color: '#64748b' }}>Enter your details to begin.</p>
-              </div>
-              <div ref={formTilt.cardRef} onMouseMove={formTilt.handleMouseMove} onMouseLeave={formTilt.handleMouseLeave} style={{ maxWidth: 440, margin: '0 auto', transition: 'transform 0.3s ease' }}>
-                <div className="sv-card-premium">
-                  <form onSubmit={handleSubmitForm} style={{ padding: 32 }}>
-                    <div className="sv-shimmer" style={{ marginBottom: 16 }} />
-                    <div className="space-y-5">
-                      <div><label style={{ fontSize: 11, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.1em', color: '#94a3b8', display: 'block', marginBottom: 6 }}>Your name</label><Input value={name} onChange={(e) => setName(e.target.value)} placeholder="John Doe" style={{ background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 10, height: 44 }} required /></div>
-                      <div><label style={{ fontSize: 11, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.1em', color: '#94a3b8', display: 'block', marginBottom: 6 }}>Company name</label><Input value={companyName} onChange={(e) => setCompanyName(e.target.value)} placeholder="Acme Corp" style={{ background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 10, height: 44 }} required /></div>
-                      <button type="submit" className="sv-btn-navy" style={{ width: '100%', padding: '14px 0', fontSize: 15 }}>Continue</button>
-                    </div>
-                    <div className="flex items-center justify-center gap-2" style={{ marginTop: 20, color: '#94a3b8' }}><Lock style={{ width: 14, height: 14 }} /><span style={{ fontSize: 11 }}>End-to-end encrypted · Your data stays private</span></div>
-                  </form>
-                </div>
-              </div>
-            </section></AnimatedSection>
+            <AnimatedSection><section ref={formRef} style={{ marginBottom: 80 }}><div style={{ textAlign: 'center', marginBottom: 32 }}><div className="sv-icon-circle-navy" style={{ width: 56, height: 56, display: 'inline-flex', marginBottom: 16, animation: 'svFloat 3s ease-in-out infinite' }}><FileText style={{ width: 28, height: 28 }} /></div><h3 style={{ fontSize: 26, fontWeight: 700, color: '#0f172a', marginBottom: 8 }}>Start your audit</h3><p style={{ fontSize: 14, color: '#64748b' }}>Enter your details to begin.</p></div><div ref={formTilt.cardRef} onMouseMove={formTilt.handleMouseMove} onMouseLeave={formTilt.handleMouseLeave} style={{ maxWidth: 440, margin: '0 auto', transition: 'transform 0.3s ease' }}><div className="sv-card-premium"><form onSubmit={handleSubmitForm} style={{ padding: 32 }}><div className="sv-shimmer" style={{ marginBottom: 16 }} /><div className="space-y-5"><div><label style={{ fontSize: 11, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.1em', color: '#94a3b8', display: 'block', marginBottom: 6 }}>Your name</label><Input value={name} onChange={(e) => setName(e.target.value)} placeholder="John Doe" style={{ background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 10, height: 44 }} required /></div><div><label style={{ fontSize: 11, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.1em', color: '#94a3b8', display: 'block', marginBottom: 6 }}>Company name</label><Input value={companyName} onChange={(e) => setCompanyName(e.target.value)} placeholder="Acme Corp" style={{ background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 10, height: 44 }} required /></div><button type="submit" className="sv-btn-navy" style={{ width: '100%', padding: '14px 0', fontSize: 15 }}>Continue</button></div><div className="flex items-center justify-center gap-2" style={{ marginTop: 20, color: '#94a3b8' }}><Lock style={{ width: 14, height: 14 }} /><span style={{ fontSize: 11 }}>End-to-end encrypted · Your data stays private</span></div></form></div></div></section></AnimatedSection>
 
             <footer style={{ textAlign: 'center', padding: '32px 0', borderTop: '1px solid #f1f5f9' }}><div className="flex items-center justify-center gap-2" style={{ marginBottom: 8 }}><img src={logo} alt="" style={{ width: 24, height: 24, borderRadius: 8, objectFit: 'contain' }} /><span style={{ fontSize: 13, fontWeight: 600, color: '#0f172a' }}>Audit Agent</span><span style={{ fontSize: 11, color: '#94a3b8' }}>by Samaveda Capital</span></div><p style={{ fontSize: 11, color: '#cbd5e1' }}>Forensic AI intelligence for mid-market M&A due diligence</p></footer>
           </div>
@@ -732,65 +729,36 @@ export default function Auditor() {
         )}
 
         {/* ═══════════ UPLOAD + AUDIT VIEW ═══════════ */}
-        {authReady && !authError && step === 'upload' && session && (
+        {step === 'upload' && session && (
           <StepTransition stepKey="upload">
           <div style={{ maxWidth: 1200, margin: '0 auto', padding: '32px 24px' }}>
-            {/* Session header */}
-            <div className="sv-card-static" style={{ marginBottom: 24 }}>
-              <div className="sv-shimmer" />
-              <div style={{ padding: '16px 24px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                <div className="flex items-center gap-4"><div className="sv-icon-circle-navy" style={{ width: 44, height: 44 }}><Users style={{ width: 20, height: 20 }} /></div><div><p style={{ fontSize: 16, fontWeight: 600, color: '#0f172a' }}>{session.name}</p><p style={{ fontSize: 13, color: '#64748b' }}>{session.company_name}</p></div></div>
-                <div className="flex items-center gap-5" style={{ fontSize: 12, color: '#94a3b8' }}><div className="flex items-center gap-1.5"><FileText style={{ width: 14, height: 14 }} /><span>{documents.length} file{documents.length !== 1 ? 's' : ''}</span></div><div style={{ width: 1, height: 14, background: '#e2e8f0' }} /><div className="flex items-center gap-1.5"><Clock style={{ width: 14, height: 14 }} /><span>{new Date(session.created_at).toLocaleString()}</span></div></div>
-              </div>
-            </div>
+            <div className="sv-card-static" style={{ marginBottom: 24 }}><div className="sv-shimmer" /><div style={{ padding: '16px 24px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}><div className="flex items-center gap-4"><div className="sv-icon-circle-navy" style={{ width: 44, height: 44 }}><Users style={{ width: 20, height: 20 }} /></div><div><p style={{ fontSize: 16, fontWeight: 600, color: '#0f172a' }}>{session.name}</p><p style={{ fontSize: 13, color: '#64748b' }}>{session.company_name}</p></div></div><div className="flex items-center gap-5" style={{ fontSize: 12, color: '#94a3b8' }}><div className="flex items-center gap-1.5"><FileText style={{ width: 14, height: 14 }} /><span>{documents.length} file{documents.length !== 1 ? 's' : ''}</span></div><div style={{ width: 1, height: 14, background: '#e2e8f0' }} /><div className="flex items-center gap-1.5"><Clock style={{ width: 14, height: 14 }} /><span>{new Date(session.created_at).toLocaleString()}</span></div></div></div></div>
 
             <div className="grid grid-cols-1 lg:grid-cols-5 gap-6">
-              {/* Left: Documents */}
               <div className="lg:col-span-2">
                 <div className="sv-card-static" style={{ position: 'sticky', top: 72 }}>
-                  <div style={{ padding: '16px 20px', borderBottom: '1px solid #f1f5f9', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                    <div className="flex items-center gap-2.5"><div className="sv-icon-circle-light" style={{ width: 32, height: 32 }}><Upload style={{ width: 16, height: 16, color: '#1e3a8a' }} /></div><h3 style={{ fontSize: 15, fontWeight: 600, color: '#0f172a' }}>Documents</h3></div>
-                    {documents.length > 0 && <div className="sv-badge-navy" style={{ padding: '2px 10px' }}><span style={{ fontSize: 11, fontWeight: 600 }}>{documents.length}</span></div>}
-                  </div>
+                  <div style={{ padding: '16px 20px', borderBottom: '1px solid #f1f5f9', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}><div className="flex items-center gap-2.5"><div className="sv-icon-circle-light" style={{ width: 32, height: 32 }}><Upload style={{ width: 16, height: 16, color: '#1e3a8a' }} /></div><h3 style={{ fontSize: 15, fontWeight: 600, color: '#0f172a' }}>Documents</h3></div>{documents.length > 0 && <div className="sv-badge-navy" style={{ padding: '2px 10px' }}><span style={{ fontSize: 11, fontWeight: 600 }}>{documents.length}</span></div>}</div>
                   <div style={{ padding: 16 }} className="space-y-3">
                     <div className="flex gap-1.5">
                       <label style={{ flex: 1 }}><button disabled={uploading || uploadingFolders} className="sv-btn-navy" style={{ width: '100%', fontSize: 12, padding: '8px 0' }} onClick={() => (document.querySelector('#sv-file-input') as HTMLInputElement)?.click()}><Upload style={{ width: 14, height: 14 }} />{uploading ? 'Uploading...' : 'Files'}</button><input id="sv-file-input" type="file" multiple style={{ display: 'none' }} onChange={handleFileSelect} disabled={uploading || uploadingFolders} /></label>
                       <label style={{ flex: 1 }}><button disabled={uploadingFolders || uploading} className="sv-btn-outline" style={{ width: '100%', fontSize: 12, padding: '8px 0' }} onClick={() => (document.querySelector('#sv-folder-input') as HTMLInputElement)?.click()}><FolderOpen style={{ width: 14, height: 14, color: '#1e3a8a' }} />{uploadingFolders ? '...' : 'Folders'}</button><input id="sv-folder-input" type="file" {...({ webkitdirectory: '' } as React.InputHTMLAttributes<HTMLInputElement>)} multiple style={{ display: 'none' }} onChange={handleFolderUpload} disabled={uploadingFolders || uploading} /></label>
                     </div>
                     {breadcrumbs.length > 1 && <div className="flex items-center gap-1 flex-wrap" style={{ fontSize: 12, color: '#64748b' }}>{breadcrumbs.map((b, i) => (<span key={b.id ?? 'root'} className="flex items-center gap-1">{i > 0 && <ChevronRight style={{ width: 12, height: 12, color: '#cbd5e1' }} />}<button type="button" onClick={() => setCurrentFolderId(b.id)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'inherit', padding: 0, fontSize: 12 }}>{b.name}</button></span>))}</div>}
-
-                    {/* Drag & Drop Zone */}
                     {subfolders.length === 0 && docsInFolder.length === 0 && <DragDropZone onFiles={processFiles} disabled={uploading || uploadingFolders} />}
-
-                    {(subfolders.length > 0 || docsInFolder.length > 0) && (
-                      <div className="space-y-0.5" style={{ maxHeight: 300, overflowY: 'auto' }}>
-                        {subfolders.map((f) => (<button key={f.id} type="button" onClick={() => setCurrentFolderId(f.id)} className="sv-folder-item"><Folder style={{ width: 16, height: 16, color: '#1e3a8a', flexShrink: 0 }} /><span style={{ fontSize: 13, fontWeight: 500, color: '#0f172a', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>{f.name}</span><ChevronRight style={{ width: 14, height: 14, color: '#cbd5e1' }} /></button>))}
-                        {docsInFolder.map((d, idx) => (<div key={d.id} className="sv-file-item" style={{ animation: `svSlideUp 0.3s ease-out ${idx * 30}ms both` }}><FileText style={{ width: 16, height: 16, color: '#94a3b8', flexShrink: 0 }} /><div style={{ flex: 1, minWidth: 0 }}><div className="flex items-center gap-2"><p style={{ fontSize: 13, color: '#334155', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{d.name}</p><FileTypeBadge name={d.name} /></div><p style={{ fontSize: 10, color: '#cbd5e1' }}>{formatFileSize(d.file_size)}</p></div></div>))}
-                      </div>
-                    )}
-
+                    {(subfolders.length > 0 || docsInFolder.length > 0) && (<div className="space-y-0.5" style={{ maxHeight: 300, overflowY: 'auto' }}>{subfolders.map((f) => (<button key={f.id} type="button" onClick={() => setCurrentFolderId(f.id)} className="sv-folder-item"><Folder style={{ width: 16, height: 16, color: '#1e3a8a', flexShrink: 0 }} /><span style={{ fontSize: 13, fontWeight: 500, color: '#0f172a', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>{f.name}</span><ChevronRight style={{ width: 14, height: 14, color: '#cbd5e1' }} /></button>))}{docsInFolder.map((d, idx) => (<div key={d.id} className="sv-file-item" style={{ animation: `svSlideUp 0.3s ease-out ${idx * 30}ms both` }}><FileText style={{ width: 16, height: 16, color: '#94a3b8', flexShrink: 0 }} /><div style={{ flex: 1, minWidth: 0 }}><div className="flex items-center gap-2"><p style={{ fontSize: 13, color: '#334155', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{d.name}</p><FileTypeBadge name={d.name} /></div><p style={{ fontSize: 10, color: '#cbd5e1' }}>{formatFileSize(d.file_size)}</p></div></div>))}</div>)}
                     {uploadProgress.length > 0 && <div className="space-y-1.5" style={{ paddingTop: 12, borderTop: '1px solid #f1f5f9' }}>{uploadProgress.map((u) => (<div key={u.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 12px', borderRadius: 10, background: '#eff6ff', border: '1px solid #bfdbfe', animation: 'svSlideUp 0.3s ease-out' }}><Loader2 style={{ width: 14, height: 14, color: '#1e3a8a', animation: u.progress < 100 ? 'spin 1s linear infinite' : 'none', flexShrink: 0 }} /><span style={{ fontSize: 12, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1, color: '#1e293b' }}>{u.name}</span><div style={{ width: 40, height: 4, borderRadius: 2, background: '#dbeafe', overflow: 'hidden' }}><div style={{ height: '100%', borderRadius: 2, background: '#1e3a8a', transition: 'width 0.3s', width: `${u.progress}%` }} /></div>{u.progress >= 100 && <CheckCircle2 style={{ width: 14, height: 14, color: '#059669', flexShrink: 0, animation: 'svPop 0.3s ease-out' }} />}</div>))}</div>}
-
                     {(subfolders.length > 0 || docsInFolder.length > 0) && <DragDropZone onFiles={processFiles} disabled={uploading || uploadingFolders} />}
                     <div style={{ paddingTop: 8, borderTop: '1px solid #f1f5f9' }}><p style={{ fontSize: 10, color: '#cbd5e1', textAlign: 'center' }}>GST · ITR · Bank Statements · Tally · MCA · Compliance</p></div>
                   </div>
                 </div>
               </div>
 
-              {/* Right: Analysis */}
               <div className="lg:col-span-3">
                 <div className="sv-card-static">
-                  <div style={{ padding: '16px 24px', borderBottom: '1px solid #f1f5f9', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                    <div className="flex items-center gap-2.5"><div className="sv-icon-circle-light" style={{ width: 32, height: 32 }}><BarChart3 style={{ width: 16, height: 16, color: '#1e3a8a' }} /></div><h3 style={{ fontSize: 15, fontWeight: 600, color: '#0f172a' }}>Analysis & reports</h3></div>
-                    <span style={{ fontSize: 11, color: '#94a3b8' }}>Forensic · CIM · Teaser</span>
-                  </div>
+                  <div style={{ padding: '16px 24px', borderBottom: '1px solid #f1f5f9', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}><div className="flex items-center gap-2.5"><div className="sv-icon-circle-light" style={{ width: 32, height: 32 }}><BarChart3 style={{ width: 16, height: 16, color: '#1e3a8a' }} /></div><h3 style={{ fontSize: 15, fontWeight: 600, color: '#0f172a' }}>Analysis & reports</h3></div><span style={{ fontSize: 11, color: '#94a3b8' }}>Forensic · CIM · Teaser</span></div>
                   <div style={{ padding: 20 }}>
                     <Tabs defaultValue="audit" className="space-y-4">
-                      <TabsList style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 12, padding: 3 }}>
-                        <TabsTrigger value="audit" style={{ borderRadius: 10, fontSize: 12, fontWeight: 600 }}><Shield className="w-3.5 h-3.5 mr-1.5" />Audit</TabsTrigger>
-                        <TabsTrigger value="cim" style={{ borderRadius: 10, fontSize: 12, fontWeight: 600 }}><FileText className="w-3.5 h-3.5 mr-1.5" />CIM</TabsTrigger>
-                        <TabsTrigger value="teaser" style={{ borderRadius: 10, fontSize: 12, fontWeight: 600 }}><Zap className="w-3.5 h-3.5 mr-1.5" />Teaser</TabsTrigger>
-                      </TabsList>
+                      <TabsList style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 12, padding: 3 }}><TabsTrigger value="audit" style={{ borderRadius: 10, fontSize: 12, fontWeight: 600 }}><Shield className="w-3.5 h-3.5 mr-1.5" />Audit</TabsTrigger><TabsTrigger value="cim" style={{ borderRadius: 10, fontSize: 12, fontWeight: 600 }}><FileText className="w-3.5 h-3.5 mr-1.5" />CIM</TabsTrigger><TabsTrigger value="teaser" style={{ borderRadius: 10, fontSize: 12, fontWeight: 600 }}><Zap className="w-3.5 h-3.5 mr-1.5" />Teaser</TabsTrigger></TabsList>
 
                       <TabsContent value="audit" className="space-y-4 mt-0"><div className="space-y-5">
                         <div className="sv-info-box"><div className="sv-icon-circle-light"><Shield style={{ width: 20, height: 20, color: '#1e3a8a' }} /></div><div><h4 style={{ fontSize: 15, fontWeight: 600, color: '#0f172a', marginBottom: 4 }}>Forensic document audit</h4><p style={{ fontSize: 13, color: '#64748b', lineHeight: 1.5 }}>Evidence-cited forensic audit across all documents. Red flags backed by extracted text.</p></div></div>
@@ -803,34 +771,27 @@ export default function Auditor() {
                         {(auditJob?.status === 'running' || auditJob?.status === 'queued') && <><GamifiedAuditProgress auditJob={auditJob} documents={documents} /><MiniGamesPanel /></>}
                         {auditJob?.report_markdown && <>
                           <GamifiedAuditProgress auditJob={auditJob} documents={documents} />
-                          <ScrollArea className="h-[50vh]" style={{ borderRadius: 16, border: '1px solid #e2e8f0' }}>
-                            <div ref={reportContentRef}><div style={{ background: '#fff' }}>
-                              <div style={{ borderBottom: '1px solid #e2e8f0', background: '#f8fafc', padding: '16px 20px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}><div><p style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.15em', color: '#94a3b8', fontWeight: 500 }}>Forensic Audit Report</p><p style={{ fontSize: 16, fontWeight: 600, color: '#0f172a', marginTop: 2 }}>{session?.company_name}</p></div><div className="flex gap-2"><span style={{ borderRadius: 999, border: '1px solid #e2e8f0', background: '#fff', padding: '4px 12px', fontSize: 11, color: '#64748b' }}>{auditJob?.processed_files}/{auditJob?.total_files} files</span><span style={{ borderRadius: 999, border: '1px solid #bbf7d0', background: '#f0fdf4', padding: '4px 12px', fontSize: 11, color: '#059669', fontWeight: 500 }}>Completed</span></div></div>
-                              <div style={{ padding: '20px 24px', position: 'relative' }}><div style={{ position: 'absolute', inset: 0, pointerEvents: 'none', backgroundImage: `url(${samavedaWatermark})`, backgroundRepeat: 'repeat', backgroundSize: '350px', opacity: 0.12, zIndex: 10 }} /><div className="relative z-0 prose prose-sm max-w-none break-words prose-h2:text-indigo-700 prose-h3:text-emerald-700 prose-p:text-slate-700 prose-strong:text-slate-900 prose-table:border prose-th:border prose-td:border prose-th:bg-slate-100"><ReactMarkdown remarkPlugins={[remarkGfm]}>{auditJob.report_markdown}</ReactMarkdown></div></div>
-                            </div></div>
-                          </ScrollArea>
+                          <div ref={reportContentRef} style={{ borderRadius: 16, border: '1px solid #e2e8f0', overflow: 'hidden', height: '50vh' }}>
+                            <iframe
+                              srcDoc={previewHtml}
+                              style={{ width: '100%', height: '100%', border: 'none' }}
+                              title="Forensic Audit Report Preview"
+                            />
+                          </div>
                         </>}
                       </div></TabsContent>
 
                       <TabsContent value="cim" className="space-y-4 mt-0"><div className="space-y-5">
                         <div className="sv-info-box"><div className="sv-icon-circle-light"><FileText style={{ width: 20, height: 20, color: '#1e3a8a' }} /></div><div><h4 style={{ fontSize: 15, fontWeight: 600, color: '#0f172a', marginBottom: 4 }}>Confidential Information Memorandum</h4><p style={{ fontSize: 13, color: '#64748b', lineHeight: 1.5 }}>Comprehensive CIM from all documents — ready for deal distribution.</p></div></div>
                         {cimError && <div className="sv-error-box"><AlertTriangle style={{ width: 16, height: 16, color: '#dc2626' }} /><p style={{ fontSize: 13, color: '#dc2626' }}>{cimError}</p></div>}
-                        <div className="flex flex-wrap gap-2">
-                          <button onClick={startCimGeneration} disabled={cimIsRunning || documents.length === 0} className="sv-btn-navy">{cimIsRunning && <Loader2 style={{ width: 16, height: 16, animation: 'spin 1s linear infinite' }} />}{cimIsRunning ? 'Generating...' : cimReport ? 'Regenerate CIM' : 'Generate CIM'}</button>
-                          {cimIsRunning && <button onClick={() => cimAbortRef.current?.abort()} className="sv-btn-danger">Stop</button>}
-                          <button onClick={() => cimReport && downloadCimPdf()} disabled={!cimReport} className="sv-btn-outline"><Download style={{ width: 16, height: 16, color: '#1e3a8a' }} />Download CIM</button>
-                        </div>
+                        <div className="flex flex-wrap gap-2"><button onClick={startCimGeneration} disabled={cimIsRunning || documents.length === 0} className="sv-btn-navy">{cimIsRunning && <Loader2 style={{ width: 16, height: 16, animation: 'spin 1s linear infinite' }} />}{cimIsRunning ? 'Generating...' : cimReport ? 'Regenerate CIM' : 'Generate CIM'}</button>{cimIsRunning && <button onClick={() => cimAbortRef.current?.abort()} className="sv-btn-danger">Stop</button>}<button onClick={() => cimReport && downloadCimPdf()} disabled={!cimReport} className="sv-btn-outline"><Download style={{ width: 16, height: 16, color: '#1e3a8a' }} />Download CIM</button></div>
                         {cimReport && <ScrollArea className="h-[50vh]" style={{ borderRadius: 16, border: '1px solid #e2e8f0' }}><iframe title="CIM" srcDoc={withWatermark(getFormattedCIM(cimReport), samavedaWatermark)} style={{ width: '100%', minHeight: '50vh', border: 0, background: '#fff', borderRadius: 12 }} sandbox="allow-same-origin" /></ScrollArea>}
                       </div></TabsContent>
 
                       <TabsContent value="teaser" className="space-y-4 mt-0"><div className="space-y-5">
                         <div className="sv-info-box"><div className="sv-icon-circle-light"><Zap style={{ width: 20, height: 20, color: '#1e3a8a' }} /></div><div><h4 style={{ fontSize: 15, fontWeight: 600, color: '#0f172a', marginBottom: 4 }}>Investment Teaser</h4><p style={{ fontSize: 13, color: '#64748b', lineHeight: 1.5 }}>2-page teaser summary — the pre-NDA document for potential buyers.</p></div></div>
                         {teaserError && <div className="sv-error-box"><AlertTriangle style={{ width: 16, height: 16, color: '#dc2626' }} /><p style={{ fontSize: 13, color: '#dc2626' }}>{teaserError}</p></div>}
-                        <div className="flex flex-wrap gap-2">
-                          <button onClick={startTeaserGeneration} disabled={teaserIsRunning || documents.length === 0} className="sv-btn-navy">{teaserIsRunning && <Loader2 style={{ width: 16, height: 16, animation: 'spin 1s linear infinite' }} />}{teaserIsRunning ? 'Generating...' : teaserReport ? 'Regenerate' : 'Generate Teaser'}</button>
-                          {teaserIsRunning && <button onClick={() => teaserAbortRef.current?.abort()} className="sv-btn-danger">Stop</button>}
-                          <button onClick={() => teaserReport && downloadTeaserPdf()} disabled={!teaserReport} className="sv-btn-outline"><Download style={{ width: 16, height: 16, color: '#1e3a8a' }} />Download Teaser</button>
-                        </div>
+                        <div className="flex flex-wrap gap-2"><button onClick={startTeaserGeneration} disabled={teaserIsRunning || documents.length === 0} className="sv-btn-navy">{teaserIsRunning && <Loader2 style={{ width: 16, height: 16, animation: 'spin 1s linear infinite' }} />}{teaserIsRunning ? 'Generating...' : teaserReport ? 'Regenerate' : 'Generate Teaser'}</button>{teaserIsRunning && <button onClick={() => teaserAbortRef.current?.abort()} className="sv-btn-danger">Stop</button>}<button onClick={() => teaserReport && downloadTeaserPdf()} disabled={!teaserReport} className="sv-btn-outline"><Download style={{ width: 16, height: 16, color: '#1e3a8a' }} />Download Teaser</button></div>
                         {teaserReport && <ScrollArea className="h-[50vh]" style={{ borderRadius: 16, border: '1px solid #e2e8f0' }}><iframe title="Teaser" srcDoc={withWatermark(getFormattedTeaser(teaserReport), samavedaWatermark)} style={{ width: '100%', minHeight: '50vh', border: 0, background: '#fff', borderRadius: 12 }} sandbox="allow-same-origin" /></ScrollArea>}
                       </div></TabsContent>
                     </Tabs>
