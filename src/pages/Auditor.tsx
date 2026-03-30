@@ -4,11 +4,8 @@ import { Input } from '@/components/ui/input';
 import { Progress } from '@/components/ui/progress';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import {
-  Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger,
-} from '@/components/ui/dialog';
-import {
   FileText, Upload, File, Loader2, Download, ArrowLeft,
-  FolderPlus, FolderOpen, Folder, ChevronRight, Shield,
+  FolderOpen, Folder, ChevronRight, Shield,
   Search, Zap, AlertTriangle, BarChart3, Lock, CheckCircle2,
   ArrowDown, Clock, Users, ChevronDown, Sparkles, X, LogOut,
 } from 'lucide-react';
@@ -531,7 +528,6 @@ export default function Auditor() {
   const [auditError, setAuditError] = useState<string | null>(null); const [auditIsRunning, setAuditIsRunning] = useState(false);
   const [uploading, setUploading] = useState(false); const [uploadingFolders, setUploadingFolders] = useState(false);
   const [uploadProgress, setUploadProgress] = useState<{ id: string; name: string; progress: number }[]>([]);
-  const [isCreateFolderOpen, setIsCreateFolderOpen] = useState(false); const [newFolderName, setNewFolderName] = useState('');
   const [cimReport, setCimReport] = useState<CIMReport | null>(null); const [cimError, setCimError] = useState<string | null>(null); const [cimIsRunning, setCimIsRunning] = useState(false);
   const [teaserReport, setTeaserReport] = useState<TeaserReport | null>(null); const [teaserError, setTeaserError] = useState<string | null>(null); const [teaserIsRunning, setTeaserIsRunning] = useState(false);
   const [headerScrolled, setHeaderScrolled] = useState(false); const [statusLoading, setStatusLoading] = useState(false);
@@ -570,8 +566,6 @@ export default function Auditor() {
   };
 
   const targetFolderId = currentFolderId ?? session?.folderId ?? null;
-
-  const handleCreateFolder = async () => { if (!session?.sessionId || !newFolderName.trim()) return; try { const data = await auditorInvoke({ action: 'create-folder', sessionId: session.sessionId, folderName: newFolderName.trim(), parentFolderId: targetFolderId || undefined }); if (data.error) throw new Error(String(data.error)); await fetchStatus(); setNewFolderName(''); setIsCreateFolderOpen(false); toast({ title: 'Folder created' }); } catch (e: any) { toast({ title: 'Error', description: e?.message, variant: 'destructive' }); } };
 
   const processFiles = async (files: FileList) => {
     if (!files?.length || !session) return; setUploading(true);
@@ -746,7 +740,6 @@ export default function Auditor() {
                   <div style={{ padding: '16px 20px', borderBottom: '1px solid #f1f5f9', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}><div className="flex items-center gap-2.5"><div className="sv-icon-circle-light" style={{ width: 32, height: 32 }}><Upload style={{ width: 16, height: 16, color: '#1e3a8a' }} /></div><h3 style={{ fontSize: 15, fontWeight: 600, color: '#0f172a' }}>Documents</h3></div>{documents.length > 0 && <div className="sv-badge-navy" style={{ padding: '2px 10px' }}><span style={{ fontSize: 11, fontWeight: 600 }}>{documents.length}</span></div>}</div>
                   <div style={{ padding: 16 }} className="space-y-3">
                     <div className="flex gap-1.5">
-                      <Dialog open={isCreateFolderOpen} onOpenChange={setIsCreateFolderOpen}><DialogTrigger asChild><button className="sv-btn-outline" disabled={uploading || uploadingFolders} style={{ flex: 1, fontSize: 12, padding: '8px 0' }}><FolderPlus style={{ width: 14, height: 14, color: '#1e3a8a' }} />Folder</button></DialogTrigger><DialogContent><DialogHeader><DialogTitle>Create New Folder</DialogTitle></DialogHeader><div className="space-y-4 mt-4"><Input placeholder="Folder name" value={newFolderName} onChange={(e) => setNewFolderName(e.target.value)} /><button className="sv-btn-navy" style={{ width: '100%', padding: '10px 0' }} onClick={handleCreateFolder}>Create</button></div></DialogContent></Dialog>
                       <label style={{ flex: 1 }}><button disabled={uploading || uploadingFolders} className="sv-btn-navy" style={{ width: '100%', fontSize: 12, padding: '8px 0' }} onClick={() => (document.querySelector('#sv-file-input') as HTMLInputElement)?.click()}><Upload style={{ width: 14, height: 14 }} />{uploading ? 'Uploading...' : 'Files'}</button><input id="sv-file-input" type="file" multiple style={{ display: 'none' }} onChange={handleFileSelect} disabled={uploading || uploadingFolders} /></label>
                       <label style={{ flex: 1 }}><button disabled={uploadingFolders || uploading} className="sv-btn-outline" style={{ width: '100%', fontSize: 12, padding: '8px 0' }} onClick={() => (document.querySelector('#sv-folder-input') as HTMLInputElement)?.click()}><FolderOpen style={{ width: 14, height: 14, color: '#1e3a8a' }} />{uploadingFolders ? '...' : 'Folders'}</button><input id="sv-folder-input" type="file" {...({ webkitdirectory: '' } as React.InputHTMLAttributes<HTMLInputElement>)} multiple style={{ display: 'none' }} onChange={handleFolderUpload} disabled={uploadingFolders || uploading} /></label>
                     </div>

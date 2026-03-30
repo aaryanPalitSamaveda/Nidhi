@@ -81,6 +81,14 @@ interface DocumentItem {
   recent_activities?: DocumentActivity[];
 }
 
+/** Matches get_user_role_for_vault (FIX_NDA_CLIENT_ROLE): dataroom viewers with role `client` use investor NDA */
+function normalizeRoleForNDA(role: string | null | undefined): 'seller' | 'investor' | null {
+  if (!role) return null;
+  if (role === 'seller' || role === 'investor') return role;
+  if (role === 'client') return 'investor';
+  return null;
+}
+
 export default function ClientVault() {
   const { user } = useAuth();
   const { toast } = useToast();
@@ -103,7 +111,9 @@ export default function ClientVault() {
   const [isDownloadingAll, setIsDownloadingAll] = useState(false);
   const [ndaStatus, setNdaStatus] = useState<'checking' | 'signed' | 'unsigned' | 'not_required' | null>(null);
   const [userProfile, setUserProfile] = useState<any>(null);
-  const [effectiveRole, setEffectiveRole] = useState<'seller' | 'investor' | 'admin' | 'client' | null>(null);
+  /** Resolved role for NDA template row (seller | investor) after normalizing client → investor */
+  const [effectiveRole, setEffectiveRole] = useState<'seller' | 'investor' | null>(null);
+  const [userProfileReady, setUserProfileReady] = useState(false);
 
   useEffect(() => {
     fetchVaults();
@@ -112,38 +122,40 @@ export default function ClientVault() {
   }, [user]);
 
   const fetchUserProfile = async () => {
-    if (!user) return;
+    if (!user) {
+      setUserProfile(null);
+      setUserProfileReady(false);
+      return;
+    }
+    setUserProfileReady(false);
     try {
-      // Get user role instead of client_type
       const { data, error } = await supabase
         .from('user_roles')
         .select('role')
         .eq('user_id', user.id)
         .single();
-      
+
       if (!error && data) {
         setUserProfile({ role: data.role });
       } else {
-        // If no role found, default to 'investor' (matches getUserRole behavior)
-        // This ensures domain-based users can see NDAs if they have access
         setUserProfile({ role: 'investor' });
       }
     } catch (error) {
       console.error('Error fetching user role:', error);
-      // Default to 'investor' on error to allow access
       setUserProfile({ role: 'investor' });
+    } finally {
+      setUserProfileReady(true);
     }
   };
 
-  // Check NDA status when vault is selected
+  // Check NDA status when vault is selected (after profile loaded so client→investor fallback works)
   useEffect(() => {
-    if (!selectedVault || !user) return;
-    
-    // Reset effective role when vault changes
+    if (!selectedVault || !user || !userProfileReady) return;
+
     setEffectiveRole(null);
-    // Check NDA status (will determine effective role with domain inheritance)
     checkNDAStatus();
-  }, [selectedVault, user, userProfile]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- checkNDAStatus closes over latest userProfile
+  }, [selectedVault, user, userProfile, userProfileReady]);
 
   const checkNDAStatus = async () => {
     if (!selectedVault || !user) return;
@@ -162,26 +174,28 @@ export default function ClientVault() {
         console.error('Error getting vault role:', roleError);
       }
 
-      // If no role found (including domain-based), fall back to explicit role
-      const role = vaultRole || userProfile?.role;
+      const rawRole = vaultRole ?? userProfile?.role ?? null;
+      const role = normalizeRoleForNDA(rawRole);
       setEffectiveRole(role);
-      
-      console.log('NDA Check - Vault Role:', vaultRole, 'User Profile Role:', userProfile?.role, 'Effective Role:', role);
-      
-      // Only check for seller and investor roles
-      if (!role || (role !== 'seller' && role !== 'investor')) {
-        console.log('NDA not required - role is:', role);
+
+      console.log('NDA Check - Vault Role:', vaultRole, 'User Profile Role:', userProfile?.role, 'NDA role:', role);
+
+      if (!role) {
+        console.log('NDA not required - role is:', rawRole);
         setNdaStatus('not_required');
         return;
       }
-      
-      // Check if NDA template exists for this role
-      const { data: template } = await supabase
+
+      const { data: template, error: templateErr } = await supabase
         .from('nda_templates')
         .select('id')
         .eq('vault_id', selectedVault.id)
-        .eq('role_type', role) // Use effective role (with domain inheritance)
-        .single();
+        .eq('role_type', role)
+        .maybeSingle();
+
+      if (templateErr) {
+        console.error('NDA template lookup error:', templateErr);
+      }
 
       if (!template) {
         // No NDA template for this role, allow access
@@ -195,7 +209,7 @@ export default function ClientVault() {
         .select('status')
         .eq('vault_id', selectedVault.id)
         .eq('user_id', user.id)
-        .single();
+        .maybeSingle();
 
       if (signature) {
         if (signature.status === 'signed') {
@@ -1325,13 +1339,10 @@ export default function ClientVault() {
     if (!selectedVault || !user) return;
 
     try {
-      // Fetch NDA template for user's role
-      if (!userProfile) {
-        throw new Error('User profile not found');
+      const roleToUse = effectiveRole || normalizeRoleForNDA(userProfile?.role);
+      if (!roleToUse) {
+        throw new Error('Could not determine your role for this dataroom. Please refresh or contact support.');
       }
-
-      // Use effective role (with domain inheritance) instead of userProfile.role
-      const roleToUse = effectiveRole || userProfile.role;
       
       const { data: template, error: templateError } = await supabase
         .from('nda_templates')
@@ -1403,17 +1414,17 @@ export default function ClientVault() {
   const handleNDADecline = () => {
     if (!selectedVault || !user) return;
 
-    // Save declined status
-    supabase
-      .from('nda_templates')
-      .select('id')
-      .eq('vault_id', selectedVault.id)
-      .single()
-      .then(({ data: template }) => {
-        if (template) {
-          return supabase
-            .from('nda_signatures')
-            .insert({
+    const declineRole = effectiveRole || normalizeRoleForNDA(userProfile?.role);
+    if (declineRole) {
+      supabase
+        .from('nda_templates')
+        .select('id')
+        .eq('vault_id', selectedVault.id)
+        .eq('role_type', declineRole)
+        .maybeSingle()
+        .then(({ data: template }) => {
+          if (template) {
+            return supabase.from('nda_signatures').insert({
               vault_id: selectedVault.id,
               user_id: user.id,
               template_id: template.id,
@@ -1421,9 +1432,10 @@ export default function ClientVault() {
               signature_name: '',
               signature_company: '',
             });
-        }
-      })
-      .catch(console.error);
+          }
+        })
+        .catch(console.error);
+    }
 
     toast({
       title: 'NDA Declined',
@@ -1436,15 +1448,13 @@ export default function ClientVault() {
     }, 1500);
   };
 
-  // Show NDA overlay if unsigned
-  // Use effective role (with domain inheritance) - if aditya is Investor, all domain users get Investor NDA
-  const roleForNDA = effectiveRole || userProfile?.role;
-  if (ndaStatus === 'unsigned' && selectedVault && roleForNDA && (roleForNDA === 'seller' || roleForNDA === 'investor')) {
+  const roleForNDA = effectiveRole || normalizeRoleForNDA(userProfile?.role);
+  if (ndaStatus === 'unsigned' && selectedVault && roleForNDA) {
     return (
       <DashboardLayout>
         <NDAOverlay
           vaultId={selectedVault.id}
-          roleType={roleForNDA as 'seller' | 'investor'}
+          roleType={roleForNDA}
           onAgree={handleNDAAgree}
           onDecline={handleNDADecline}
         />
