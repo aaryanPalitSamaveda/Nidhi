@@ -54,6 +54,61 @@ import {
 } from '@/components/ui/dropdown-menu';
 import { Checkbox } from '@/components/ui/checkbox';
 import { formatFileSize } from '@/utils/format';
+import samavedaWatermark from '@/assets/samavedaWatermark.png';
+
+function withWatermark(html: string, watermarkUrl: string): string {
+  const fullUrl = watermarkUrl.startsWith('http') ? watermarkUrl : new URL(watermarkUrl, window.location.href).href;
+  const style = `<style id="samaveda-watermark">
+    body { position: relative !important; }
+    body::before {
+      content: '';
+      position: fixed;
+      top: 0; left: 0; right: 0; bottom: 0;
+      background-image: url('${fullUrl}');
+      background-repeat: repeat;
+      background-position: center;
+      background-size: 350px 350px;
+      opacity: 0.12;
+      pointer-events: none;
+      z-index: 0;
+    }
+    body > * { position: relative; z-index: 1; }
+    @media print {
+      body::before {
+        position: fixed !important;
+        -webkit-print-color-adjust: exact !important;
+        print-color-adjust: exact !important;
+      }
+      body {
+        -webkit-print-color-adjust: exact !important;
+        print-color-adjust: exact !important;
+      }
+    }
+  </style>`;
+  if (html.includes('</head>')) return html.replace('</head>', style + '</head>');
+  if (html.includes('<head>')) return html.replace('<head>', '<head>' + style);
+  return '<head>' + style + '</head>' + html;
+}
+
+function capturePdfFromHtml(html: string, watermarkUrl: string, filename: string): Promise<void> {
+  const withWm = withWatermark(html, watermarkUrl);
+  const parser = new DOMParser();
+  const doc = parser.parseFromString(withWm, 'text/html');
+  const body = doc.body;
+  const styles = Array.from(doc.querySelectorAll('style')).map((s) => s.textContent).join('\n');
+  const scopedStyles = styles.replace(/\bbody\b/g, '.samaveda-pdf-wrap');
+  const temp = document.createElement('div');
+  temp.id = 'samaveda-pdf-temp';
+  temp.className = 'samaveda-pdf-wrap';
+  temp.style.cssText = 'position:fixed;left:0;top:0;width:210mm;min-height:297mm;background:#fff;z-index:99999;overflow:visible;padding:0;font-family:Georgia,serif;color:#1a1a1a';
+  temp.innerHTML = `<style>${scopedStyles}</style>${body.innerHTML}`;
+  document.body.appendChild(temp);
+  return new Promise<void>((resolve, reject) => {
+    import('html2pdf.js').then(({ default: html2pdf }) => {
+      html2pdf().set({ margin: 10, filename, image: { type: 'jpeg', quality: 0.98 }, html2canvas: { scale: 2, backgroundColor: '#ffffff', useCORS: true }, jsPDF: { orientation: 'portrait', unit: 'mm', format: 'a4' } }).from(temp).save().then(() => { temp.remove(); resolve(); }).catch((e: Error) => { temp.remove(); reject(e); });
+    }).catch(reject);
+  });
+}
 
 interface FolderItem {
   id: string;
@@ -170,6 +225,46 @@ function VaultDetailInner() {
       return '';
     }
   }, [auditJob?.report_markdown]);
+
+  // Build structured preview HTML from report_json (cover + TOC + 10 sections)
+  const previewHtml = useMemo(() => {
+    const md = auditJob?.report_markdown;
+    if (!md) return '';
+    const rj: any = auditJob?.report_json ?? null;
+    const dataroomName = vault?.name ?? 'Dataroom';
+    const esc = (s: string) => String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    const sc = (s: string) => { const v=(s||'').toLowerCase(); if(v==='critical'||v==='high') return '#dc2626'; if(v==='medium') return '#d97706'; return '#16a34a'; };
+    const sb = (s: string) => { const v=(s||'').toLowerCase(); if(v==='critical'||v==='high') return '#fef2f2'; if(v==='medium') return '#fffbeb'; return '#f0fdf4'; };
+    const rt = (headers: string[], rows: string[][]) => !rows.length?'': `<table style="width:100%;border-collapse:collapse;margin:12px 0;font-size:10pt;"><thead><tr>${headers.map(h=>`<th style="border:1px solid #e2e8f0;padding:7px 9px;background:#f8fafc;font-weight:700;color:#334155;text-align:left;">${esc(h)}</th>`).join('')}</tr></thead><tbody>${rows.map((r,i)=>`<tr style="${i%2===1?'background:#f8fafc;':''}">${r.map(c=>`<td style="border:1px solid #e2e8f0;padding:6px 9px;color:#0f172a;">${esc(c)}</td>`).join('')}</tr>`).join('')}</tbody></table>`;
+    const rfb = (title: string, sev: string, detail: string, extra='') => `<div style="border-left:4px solid ${sc(sev)};background:${sb(sev)};padding:12px 14px;margin:10px 0;border-radius:0 6px 6px 0;"><div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;"><span style="background:${sc(sev)};color:#fff;font-size:8pt;font-weight:700;padding:2px 8px;border-radius:4px;">${(sev||'unknown').toUpperCase()}</span><strong style="color:#0f172a;font-size:10.5pt;">${esc(title)}</strong></div><p style="color:#374151;margin:0 0 6px;font-size:10pt;">${esc(detail)}</p>${extra}</div>`;
+    const allRedFlags: any[] = Array.isArray(rj?.red_flags)?rj.red_flags:[];
+    const riskBreakdown: any[] = Array.isArray(rj?.risk_breakdown)?rj.risk_breakdown:[];
+    const riskScore = rj?.forensic_risk_score??null;
+    const execSummary = rj?.executive_summary??md.split('\n').slice(0,6).join(' ').replace(/#+/g,'').trim();
+    const sec = (num: number, title: string, body: string) =>
+      `<div style="padding:28px 36px;border-bottom:1px solid #e2e8f0;"><div style="font-size:8pt;letter-spacing:.15em;color:#94a3b8;margin-bottom:2px;">${num}</div><h2 style="font-size:16pt;font-weight:700;color:#0f172a;margin:0 0 12px;font-family:Georgia,serif;">${title}</h2>${body}</div>`;
+    const cover = `<div style="min-height:92vh;display:flex;flex-direction:column;justify-content:center;align-items:center;background:#fff;padding:48px 64px;border-bottom:1px solid #e2e8f0;"><div style="border:1px solid #e2e8f0;border-radius:30px;display:inline-block;padding:6px 20px;margin-bottom:48px;"><span style="font-size:9pt;letter-spacing:.2em;color:#64748b;font-family:Georgia,serif;">C O N F I D E N T I A L &nbsp;— &nbsp;F O R E N S I C &nbsp;A U D I T &nbsp;R E P O R T</span></div><h1 style="font-size:26pt;font-weight:300;color:#0f172a;font-family:Georgia,serif;margin:0 0 14px;">Forensic Audit Analysis</h1><p style="font-size:13pt;color:#64748b;font-family:Georgia,serif;font-style:italic;margin:0 0 48px;">Independent Due Diligence &amp; Risk Assessment</p><p style="font-size:10pt;color:#94a3b8;letter-spacing:.15em;font-family:Georgia,serif;">SAMAVEDA CAPITAL</p></div>`;
+    const toc = `<div style="min-height:50vh;padding:36px 48px;border-bottom:1px solid #e2e8f0;"><h2 style="font-size:16pt;font-weight:700;color:#0f172a;margin:0 0 24px;font-family:Georgia,serif;">📋 Table of Contents</h2><table style="width:100%;border-collapse:collapse;">${[['1.','Executive Summary & Risk Score Breakdown','Section 1'],['2.','Revenue Reconciliation Analysis','Section 2'],['3.','Financial Red Flags — Detailed Findings','Section 3'],['4.','Cash Flow & Fund Siphoning Analysis','Section 4'],['5.','Document Authenticity & Integrity Review','Section 5'],['6.','Temporal & Timeline Inconsistencies','Section 6'],['7.','Critical Documentation Gaps','Section 7'],['8.','MNC Client Verification','Section 8'],['9.','Risk Matrix & Beneish M-Score Indicators','Section 9'],['10.','Recommendations & Final Verdict','Section 10']].map(([n,t,s])=>`<tr style="border-bottom:1px solid #f1f5f9;"><td style="padding:8px 6px;color:#64748b;font-size:10pt;width:28px;">${n}</td><td style="padding:8px 6px;font-size:10.5pt;color:#0f172a;">${t}</td><td style="padding:8px 6px;font-size:10pt;color:#94a3b8;text-align:right;">${s}</td></tr>`).join('')}</table></div>`;
+    const metricCards = [rj?.claimed_revenue,rj?.actual_revenue,rj?.claimed_valuation,allRedFlags.length>0?`${allRedFlags.length} Red Flags`:null].filter(Boolean);
+    const metricLabels = ['CLAIMED REVENUE','ACTUAL REVENUE','CLAIMED VALUATION','RED FLAGS'];
+    const s1body = `<div style="border:1.5px solid #e2e8f0;border-radius:8px;padding:16px 20px;margin-bottom:16px;background:#fafafa;"><p style="font-size:10.5pt;color:#374151;line-height:1.7;margin:0;">${esc(execSummary)}</p></div>${metricCards.length?`<div style="display:grid;grid-template-columns:repeat(${Math.min(metricCards.length,4)},1fr);gap:10px;margin-bottom:16px;">${metricCards.map((v,i)=>`<div style="border:1.5px solid #e2e8f0;border-radius:8px;padding:10px 12px;background:#fff;"><div style="font-size:7pt;letter-spacing:.1em;color:#94a3b8;margin-bottom:3px;">${metricLabels[i]}</div><div style="font-size:12pt;font-weight:700;color:#0f172a;">${esc(String(v))}</div></div>`).join('')}</div>`:''} ${riskBreakdown.length?`<h3 style="font-size:10.5pt;font-weight:700;margin:12px 0 8px;">Forensic Risk Score Breakdown</h3><div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;">${riskBreakdown.map((rb:any)=>`<div style="border:1.5px solid #e2e8f0;border-radius:8px;padding:8px 10px;"><div style="font-size:7pt;color:#64748b;text-transform:uppercase;">${esc(rb.category)}</div><div style="font-size:15pt;font-weight:700;color:#0f172a;">${rb.score??'—'}<span style="font-size:8pt;color:#94a3b8;">/10</span></div><div style="font-size:8pt;color:#64748b;">${esc(rb.note??'')}</div></div>`).join('')}</div>`:''}`;
+    const s2=rj?.section2_revenue_reconciliation; const s3=rj?.section3_financial_red_flags; const s4=rj?.section4_cash_flow_analysis; const s5=rj?.section5_document_authenticity; const s6=rj?.section6_temporal_inconsistencies; const s7=rj?.section7_documentation_gaps; const s8=rj?.section8_mnc_client_verification; const s9=rj?.section9_risk_matrix; const s10=rj?.section10_recommendations;
+    const sections = [
+      sec(1,'Executive Summary',s1body),
+      s2?sec(2,'Revenue Reconciliation Analysis',`${s2.intro?`<p style="color:#374151;margin-bottom:12px;">${esc(s2.intro)}</p>`:''} ${Array.isArray(s2.data_table)&&s2.data_table.length?rt(['Source Document','FY23','FY24','FY25','Observations'],s2.data_table.map((r:any)=>[r.source_document??'',r.fy23??'—',r.fy24??'—',r.fy25??'—',r.observations??''])):''} ${(Array.isArray(s2.red_flags)?s2.red_flags:[]).map((rf:any)=>rfb(rf.title??'',rf.severity??'medium',rf.detail??rf.evidence??'')).join('')}`):'',
+      s3?sec(3,'Financial Red Flags — Detailed Findings',(Array.isArray(s3.subsections)?s3.subsections:[]).map((sub:any)=>{const mt=Array.isArray(sub.metrics_table)?sub.metrics_table:[];const cols=mt.length?Object.keys(mt[0]):[];return `<h3 style="font-size:11pt;font-weight:700;margin:14px 0 8px;border-bottom:1px solid #e2e8f0;padding-bottom:4px;">${esc(sub.title??'')}</h3>${mt.length?rt(cols.map((c:string)=>c.replace(/_/g,' ').toUpperCase()),mt.map((r:any)=>cols.map((c:string)=>r[c]??'—'))):''} ${(Array.isArray(sub.red_flags)?sub.red_flags:[]).map((rf:any)=>rfb(rf.title??'',rf.severity??'medium',rf.detail??'')).join('')}`;}).join('')):'',
+      s4?sec(4,'Cash Flow & Fund Siphoning Analysis',(Array.isArray(s4.subsections)?s4.subsections:[]).map((sub:any)=>{const tt=Array.isArray(sub.transactions_table)?sub.transactions_table:[];const cols=tt.length?Object.keys(tt[0]):[];return `<h3 style="font-size:11pt;font-weight:700;margin:14px 0 8px;">${esc(sub.title??'')}</h3>${tt.length?rt(cols.map((c:string)=>c.replace(/_/g,' ').toUpperCase()),tt.map((r:any)=>cols.map((c:string)=>r[c]??'—'))):''} ${(Array.isArray(sub.red_flags)?sub.red_flags:[]).map((rf:any)=>rfb(rf.title??'',rf.severity??'medium',rf.detail??'')).join('')}`;}).join('')):'',
+      s5?sec(5,'Document Authenticity & Integrity Review',`${Array.isArray(s5.completeness_matrix)&&s5.completeness_matrix.length?rt(['Document','Status','Issue','Risk Impact'],s5.completeness_matrix.map((r:any)=>[r.document??'',r.status??'',r.issue??'',r.risk_impact??''])):''} ${(Array.isArray(s5.red_flags)?s5.red_flags:[]).map((rf:any)=>rfb(rf.title??'',rf.severity??'medium',rf.detail??'')).join('')}`):'',
+      s6?sec(6,'Temporal & Timeline Inconsistencies',`${Array.isArray(s6.timeline_table)&&s6.timeline_table.length?rt(['Document','Date Referenced','Issue','Severity'],s6.timeline_table.map((r:any)=>[r.document??'',r.date_referenced??'',r.issue??'',r.severity??''])):''} ${(Array.isArray(s6.red_flags)?s6.red_flags:[]).map((rf:any)=>rfb(rf.title??'',rf.severity??'medium',rf.detail??'')).join('')}`):'',
+      s7?sec(7,'Critical Documentation Gaps',`<p style="color:#374151;margin-bottom:12px;">The following documents are entirely absent from the dataroom.</p>${Array.isArray(s7.gaps_table)&&s7.gaps_table.length?rt(['Missing Document','Criticality','Why It Matters'],s7.gaps_table.map((r:any)=>[r.missing_document??'',r.criticality??'',r.why_it_matters??''])):''}`):'',
+      s8?sec(8,'MNC Client Claim Verification',`${Array.isArray(s8.verifiable_receipts_table)&&s8.verifiable_receipts_table.length?`<h3 style="font-size:10.5pt;font-weight:600;margin:0 0 6px;">Verifiable Client Receipts</h3>${rt(['Client','Amount','Date','Matches Teaser?'],s8.verifiable_receipts_table.map((r:any)=>[r.client??'',r.amount??'',r.date??'',r.matches_teaser??'']))}`:''} ${Array.isArray(s8.findings)&&s8.findings.length?`<ul style="margin:8px 0 0 18px;">${(s8.findings as string[]).map(f=>`<li style="font-size:10pt;color:#374151;margin-bottom:5px;">${esc(f)}</li>`).join('')}</ul>`:''}`):'',
+      s9?sec(9,'Risk Matrix & Beneish M-Score Indicators',`${Array.isArray(s9.beneish_indicators)&&s9.beneish_indicators.length?rt(['Forensic Indicator','Present?','Evidence'],s9.beneish_indicators.map((r:any)=>[r.indicator??'',r.present??'',r.evidence??''])):''} ${s9.assessment_summary?`<div style="border-left:4px solid #dc2626;background:#fef2f2;padding:12px 14px;margin:12px 0;border-radius:0 6px 6px 0;"><strong style="color:#dc2626;">Assessment: ${s9.indicators_present_count??'?'} of ${s9.total_indicators??7} Indicators Present</strong><p style="margin:4px 0 0;color:#374151;">${esc(s9.assessment_summary)}</p></div>`:''}`):'',
+      s10?sec(10,'Recommendations & Final Verdict',`${Array.isArray(s10.immediate_critical)&&s10.immediate_critical.length?`<h3 style="font-size:11pt;font-weight:700;margin:0 0 8px;">Immediate Actions (Critical)</h3><div style="display:grid;grid-template-columns:repeat(2,1fr);gap:8px;margin-bottom:14px;">${(s10.immediate_critical as string[]).map(a=>`<div style="border:1px solid #fee2e2;background:#fef2f2;border-radius:6px;padding:8px 12px;"><span style="font-size:7pt;font-weight:700;color:#dc2626;">IMMEDIATE — CRITICAL</span><p style="margin:3px 0 0;font-size:10pt;color:#374151;">${esc(a)}</p></div>`).join('')}</div>`:''} ${Array.isArray(s10.short_term_high)&&s10.short_term_high.length?`<h3 style="font-size:11pt;font-weight:700;margin:0 0 8px;">Short-Term (High Priority)</h3><div style="display:grid;grid-template-columns:repeat(2,1fr);gap:8px;margin-bottom:14px;">${(s10.short_term_high as string[]).map(a=>`<div style="border:1px solid #fde68a;background:#fffbeb;border-radius:6px;padding:8px 12px;"><span style="font-size:7pt;font-weight:700;color:#d97706;">SHORT-TERM — HIGH</span><p style="margin:3px 0 0;font-size:10pt;color:#374151;">${esc(a)}</p></div>`).join('')}</div>`:''} ${s10.deal_structure_notes?`<div style="border:1.5px solid #e2e8f0;border-radius:8px;padding:14px 18px;margin-bottom:14px;"><h3 style="font-size:10.5pt;font-weight:700;margin:0 0 6px;">💰 Valuation & Deal Structure</h3><p style="font-size:10pt;color:#374151;margin:0;">${esc(s10.deal_structure_notes)}</p></div>`:''} ${s10.final_verdict?`<div style="border:2px solid ${s10.final_verdict.includes('DO NOT')?'#dc2626':s10.final_verdict.includes('CAUTION')?'#d97706':'#16a34a'};border-radius:8px;padding:16px 20px;text-align:center;margin-top:14px;"><div style="font-size:10pt;font-weight:700;color:${s10.final_verdict.includes('DO NOT')?'#dc2626':s10.final_verdict.includes('CAUTION')?'#d97706':'#16a34a'};letter-spacing:.1em;margin-bottom:6px;">FINAL RECOMMENDATION</div><div style="font-size:16pt;font-weight:800;color:${s10.final_verdict.includes('DO NOT')?'#dc2626':s10.final_verdict.includes('CAUTION')?'#d97706':'#16a34a'};margin-bottom:10px;">${esc(s10.final_verdict)}</div><p style="font-size:10pt;color:#374151;margin:0;">${esc(s10.final_verdict_detail??'')}</p></div>`:''}`):'',
+    ].filter(Boolean).join('');
+    const fallback = (!s2&&!s3&&!s4&&allRedFlags.length>0)?`<div style="padding:28px 36px;">${allRedFlags.map((rf:any,i:number)=>rfb(`${i+1}. ${rf.title??''}`,rf.severity??'medium',rf.what_it_means??rf.detail??'')).join('')}</div>`:'';
+    const raw = `<!DOCTYPE html><html><head><meta charset="UTF-8"><style>*{box-sizing:border-box;margin:0;padding:0;}body{font-family:'Helvetica Neue',Arial,sans-serif;font-size:11pt;color:#0f172a;background:#fff;line-height:1.6;}</style></head><body>${cover}${toc}${sections}${fallback}<div style="padding:16px 36px;background:#f8fafc;border-top:1px solid #e2e8f0;display:flex;justify-content:space-between;font-size:9pt;color:#94a3b8;"><span>SAMAVEDA CAPITAL</span><span>Risk Score: ${riskScore??'—'}/100 · Red Flags: ${allRedFlags.length} · Files: ${auditJob?.processed_files??0}</span><span>S T R I C T L Y &nbsp; C O N F I D E N T I A L</span></div></body></html>`;
+    return withWatermark(raw, samavedaWatermark);
+  }, [auditJob?.report_markdown, auditJob?.report_json, auditJob?.processed_files, vault?.name]);
   const [isCimDialogOpen, setIsCimDialogOpen] = useState(false);
   const [teaserReport, setTeaserReport] = useState<TeaserReport | null>(null);
   const [teaserError, setTeaserError] = useState<string | null>(null);
@@ -1896,21 +1991,9 @@ function VaultDetailInner() {
     };
     const severityLabel = (s: string) => (s || 'UNKNOWN').toUpperCase();
 
-    const watermarkSvg = `<div style="position:fixed;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:0;overflow:hidden;">
-      <svg width="100%" height="100%" xmlns="http://www.w3.org/2000/svg">
-        <text x="50%" y="50%" dominant-baseline="middle" text-anchor="middle"
-          font-size="96" font-family="Georgia,serif" fill="rgba(180,140,100,0.08)"
-          transform="rotate(-35 420 420)" font-weight="bold" letter-spacing="4">SAMAVEDA CAPITAL</text>
-      </svg>
-    </div>`;
-
-    const pageWatermark = `<div style="position:fixed;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:0;overflow:hidden;">
-      <svg width="100%" height="100%" xmlns="http://www.w3.org/2000/svg">
-        <text x="50%" y="50%" dominant-baseline="middle" text-anchor="middle"
-          font-size="80" font-family="Georgia,serif" fill="rgba(180,140,100,0.055)"
-          transform="rotate(-35 420 420)" font-weight="bold" letter-spacing="4">SAMAVEDA CAPITAL</text>
-      </svg>
-    </div>`;
+    // watermarkSvg/pageWatermark empty — withWatermark() injects PNG via body::before
+    const watermarkSvg = `<svg xmlns="http://www.w3.org/2000/svg" style="position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:0;"><text x="50%" y="50%" text-anchor="middle" dominant-baseline="middle" font-size="48" font-family="Georgia,serif" fill="rgba(180,140,100,0.13)" font-weight="bold" letter-spacing="6" transform="rotate(-35, 420, 420)">SAMAVEDA CAPITAL</text></svg>`;
+    const pageWatermark = `<svg xmlns="http://www.w3.org/2000/svg" style="position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:0;"><text x="50%" y="50%" text-anchor="middle" dominant-baseline="middle" font-size="48" font-family="Georgia,serif" fill="rgba(180,140,100,0.13)" font-weight="bold" letter-spacing="6" transform="rotate(-35, 420, 420)">SAMAVEDA CAPITAL</text></svg>`;
 
     const renderTable = (headers: string[], rows: string[][]): string => {
       if (!rows.length) return '';
@@ -2313,11 +2396,12 @@ function VaultDetailInner() {
   <title>Forensic Audit Report — ${esc(dataroomName)}</title>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
-    body { font-family: 'Helvetica Neue', Arial, sans-serif; font-size: 11pt; color: #0f172a; background: #ffffff; line-height: 1.6; }
+    body { font-family: 'Helvetica Neue', Arial, sans-serif; font-size: 11pt; color: #0f172a; background: #ffffff; line-height: 1.6; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
     @media print {
       @page { size: A4; margin: 14mm 16mm 14mm 16mm; }
-      body { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+      body { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
       .page-break { page-break-after: always; }
+      * { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
     }
     code { background: #f1f5f9; padding: 2px 5px; border-radius: 4px; font-family: 'Courier New', monospace; font-size: 9.5pt; }
   </style>
@@ -2341,24 +2425,16 @@ function VaultDetailInner() {
 </body>
 </html>`;
 
+    // Open in new window for printing — withWatermark injects same PNG logo as preview
     const printWindow = window.open('', '_blank', 'width=1000,height=800');
     if (!printWindow) {
-      const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `forensic_audit_${dataroomName.replace(/\s+/g, '_')}.html`;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
-      toast({ title: 'Report downloaded as HTML', description: 'Open in browser and use File → Print → Save as PDF.' });
+      toast({ title: 'Please allow popups', description: 'The report opens in a new tab.', variant: 'destructive' });
       return;
     }
     printWindow.document.open();
     printWindow.document.write(html);
     printWindow.document.close();
-    toast({ title: 'Report opened for printing', description: 'In the print dialog, set destination to "Save as PDF".' });
+    toast({ title: 'Report opened', description: 'In the print dialog, choose "Save as PDF" as destination.' });
   }, [auditJob, vault?.name, toast]);
 
 
@@ -2722,44 +2798,19 @@ function VaultDetailInner() {
                           <p className="text-sm font-medium text-foreground">Report Preview</p>
                           <p className="text-xs text-muted-foreground">Available after completion. Download for sharing.</p>
                         </div>
-                        <ScrollArea className="h-[40vh] p-3 max-w-full overflow-hidden">
+                        <div ref={reportContentRef} style={{ borderRadius: 12, border: '1px solid #e2e8f0', overflow: 'hidden', height: '40vh' }}>
                           {auditJob?.report_markdown ? (
-                            <div ref={reportContentRef} className="w-full max-w-full overflow-hidden">
-                              <div className="w-full max-w-full rounded-xl border border-slate-200 bg-white shadow-sm overflow-hidden">
-                                <div className="border-b border-slate-200 bg-slate-50 px-4 py-3">
-                                  <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-                                    <div className="min-w-0">
-                                      <p className="text-xs uppercase tracking-widest text-slate-500">Forensic Audit Report</p>
-                                      <p className="text-base font-semibold text-slate-900 truncate">
-                                        {vault?.name ?? 'Dataroom'} · Report Preview
-                                      </p>
-                                    </div>
-                                    <div className="text-xs text-slate-500">
-                                      Status: <span className="text-slate-800">{auditJob?.status || 'completed'}</span>
-                                    </div>
-                                  </div>
-                                  <div className="mt-2 flex flex-wrap gap-2 text-xs text-slate-600">
-                                    <span className="rounded-full border border-slate-200 bg-white px-2.5 py-1">
-                                      Files: {auditJob?.processed_files ?? 0}/{auditJob?.total_files ?? 0}
-                                    </span>
-                                    <span className="rounded-full border border-slate-200 bg-white px-2.5 py-1">
-                                      Progress: {Math.round(Number(auditJob?.progress ?? 0))}%
-                                    </span>
-                                  </div>
-                                </div>
-                                <div className="p-4">
-                                  <div className="prose prose-sm max-w-none break-words [overflow-wrap:anywhere] prose-headings:font-display prose-h1:text-lg prose-h2:text-base prose-h3:text-sm prose-h4:text-sm prose-h2:text-indigo-700 prose-h3:text-emerald-700 prose-h4:text-amber-700 prose-h4:bg-amber-50 prose-h4:border-l-4 prose-h4:border-amber-400 prose-h4:pl-3 prose-h4:py-1 prose-h4:rounded-md prose-p:text-slate-700 prose-strong:text-slate-900 prose-ul:text-slate-700 prose-ol:text-slate-700 prose-li:text-slate-700 prose-code:text-slate-700 prose-pre:bg-slate-50 prose-pre:text-slate-700 prose-pre:whitespace-pre-wrap prose-pre:overflow-x-auto prose-code:break-words prose-table:border prose-table:border-slate-200 prose-th:border prose-th:border-slate-200 prose-td:border prose-td:border-slate-200 prose-th:bg-slate-100 prose-th:text-slate-700 prose-th:font-semibold prose-thead:border-b prose-thead:border-slate-200">
-                                    <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                                      {sanitizedReportMarkdown}
-                                    </ReactMarkdown>
-                                  </div>
-                                </div>
-                              </div>
-                            </div>
+                            <iframe
+                              srcDoc={previewHtml}
+                              style={{ width: '100%', height: '100%', border: 'none' }}
+                              title="Forensic Audit Report Preview"
+                            />
                           ) : (
-                            <p className="text-sm text-muted-foreground">Report not generated yet.</p>
+                            <div style={{ padding: 16 }}>
+                              <p className="text-sm text-muted-foreground">Report not generated yet.</p>
+                            </div>
                           )}
-                        </ScrollArea>
+                        </div>
                       </div>
                     </CollapsibleContent>
                   </Collapsible>

@@ -45,6 +45,47 @@ export default function AuditorSessions() {
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [sessionDetails, setSessionDetails] = useState<Record<string, { docs: DocInfo[]; job: AuditJob | null }>>({});
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [deletingSelected, setDeletingSelected] = useState(false);
+
+  const toggleSelect = (id: string) => {
+    setSelectedIds(prev => {
+      const next = new Set(prev);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
+  };
+
+  const toggleSelectAll = () => {
+    if (selectedIds.size === sessions.length) {
+      setSelectedIds(new Set());
+    } else {
+      setSelectedIds(new Set(sessions.map(s => s.id)));
+    }
+  };
+
+  const handleDeleteSelected = async () => {
+    if (selectedIds.size === 0) return;
+    if (!confirm(`Delete ${selectedIds.size} selected session(s)? This will permanently remove all associated datarooms, documents, and audit reports.`)) return;
+    setDeletingSelected(true);
+    try {
+      for (const id of Array.from(selectedIds)) {
+        const session = sessions.find(s => s.id === id);
+        if (!session) continue;
+        const { data: docs } = await supabase.from('documents').select('file_path').eq('vault_id', session.vault_id);
+        const paths = (docs || []).map((d) => d.file_path).filter(Boolean);
+        if (paths.length > 0) await supabase.storage.from('documents').remove(paths);
+        await supabase.from('vaults').delete().eq('id', session.vault_id);
+      }
+      setSessions(prev => prev.filter(s => !selectedIds.has(s.id)));
+      setSelectedIds(new Set());
+      toast({ title: 'Sessions deleted', description: `${selectedIds.size} session(s) removed.` });
+    } catch (e: any) {
+      toast({ title: 'Error', description: e?.message || 'Failed to delete sessions', variant: 'destructive' });
+    } finally {
+      setDeletingSelected(false);
+    }
+  };
 
   const fetchSessions = async () => {
     const { data, error } = await supabase
@@ -147,6 +188,33 @@ export default function AuditorSessions() {
           </div>
         ) : (
           <div className="space-y-4">
+            {/* Multi-select toolbar */}
+            <div className="flex items-center justify-between px-1">
+              <div className="flex items-center gap-3">
+                <input
+                  type="checkbox"
+                  checked={selectedIds.size === sessions.length && sessions.length > 0}
+                  ref={el => { if (el) el.indeterminate = selectedIds.size > 0 && selectedIds.size < sessions.length; }}
+                  onChange={toggleSelectAll}
+                  className="w-4 h-4 cursor-pointer accent-gold"
+                />
+                <span className="text-sm text-muted-foreground">
+                  {selectedIds.size > 0 ? `${selectedIds.size} selected` : 'Select all'}
+                </span>
+              </div>
+              {selectedIds.size > 0 && (
+                <Button
+                  variant="destructive"
+                  size="sm"
+                  onClick={handleDeleteSelected}
+                  disabled={deletingSelected}
+                  className="flex items-center gap-1.5"
+                >
+                  <Trash2 className="w-4 h-4" />
+                  {deletingSelected ? 'Deleting...' : `Delete ${selectedIds.size} selected`}
+                </Button>
+              )}
+            </div>
             {sessions.map((session) => (
               <Collapsible
                 key={session.id}
@@ -160,6 +228,15 @@ export default function AuditorSessions() {
                   <CollapsibleTrigger asChild>
                     <div className="flex items-center justify-between p-4 hover:bg-muted/30 cursor-pointer transition-colors">
                       <div className="flex items-center gap-4">
+                        <div onClick={e => { e.stopPropagation(); toggleSelect(session.id); }} className="flex items-center">
+                          <input
+                            type="checkbox"
+                            checked={selectedIds.has(session.id)}
+                            onChange={() => toggleSelect(session.id)}
+                            onClick={e => e.stopPropagation()}
+                            className="w-4 h-4 cursor-pointer accent-gold"
+                          />
+                        </div>
                         <div className="w-10 h-10 rounded-lg bg-gold/10 flex items-center justify-center">
                           <User className="w-5 h-5 text-gold" />
                         </div>
